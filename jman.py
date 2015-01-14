@@ -216,7 +216,16 @@ class TaskGroup:
                 if not quiet:
                     print(line)
         print("{} of {} running: {}".format(run, len(self.tasks), self.job_group))
+    
+    def checkUniqueTasks(self):
+        all_names = [task.job_name for task in self.tasks]
+        unique_names = set(all_names)
+        assert len(unique_names) == len(all_names), "task names within group not unique"
 
+def checkUniqueTaskGroups():
+    all_names = [tg.job_group for tg in taskgroups]
+    unique_names = set(all_names)
+    assert len(all_names) == len(unique_names), "TaskGroup names not unique"
 
 def cmd_ls(args):
     for tg in taskgroups:
@@ -251,10 +260,12 @@ def cmd_clean(args):
 def cmd_cat(args):
     taskgroups[args.i].tasks[args.j].cat()
 
-
 def jman_main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
+    checkUniqueTaskGroups()
+    for tg in taskgroups:
+        tg.checkUniqueTasks()
     
     parser_list = subparsers.add_parser("ls")
     parser_list.set_defaults(func=cmd_ls)
