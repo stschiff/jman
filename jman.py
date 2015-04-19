@@ -134,7 +134,7 @@ class TaskGroup:
         else:
             for task in self.tasks:
                 if skip_succeeded:
-                    if not task.check(True) == "SUCCESS":
+                    if not (task.check(True) == "SUCCESS" or task.check(True) == "NOT FINISHED"):
                         task.submit(test)
                 else:
                     task.submit(test)
