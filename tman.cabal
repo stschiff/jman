@@ -16,7 +16,7 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Tman.Run, Tman.Task
+  exposed-modules:     Tman, Tman.Run, Tman.Task
   -- other-modules:       
   -- other-extensions:    
   build-depends:       base,
@@ -24,6 +24,8 @@ library
                        text-format-simple,
                        directory,
                        errors,
+                       unix,
+                       filepath,
                        optparse-applicative,
                        either,
                        process,
