@@ -32,3 +32,21 @@ executable makeTask
                        aeson,
                        bytestring
   default-language:    Haskell2010
+
+executable makeProject
+  main-is:             makeProject.hs
+  build-depends:       base,
+                       containers,
+                       text-format-simple,
+                       directory,
+                       errors,
+                       unix,
+                       filepath,
+                       system-filepath,
+                       optparse-applicative,
+                       either,
+                       process,
+                       split,
+                       aeson,
+                       bytestring
+  default-language:    Haskell2010
