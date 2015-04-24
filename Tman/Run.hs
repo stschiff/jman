@@ -1,8 +1,8 @@
-module Tman.Run (run) where
+module Tman.Run (run, findGroup, JobProject) where
 
 import Tman.Task (Task(..), tSubmit, tCheck, tInfo, tPrint, tClean, tMeta)
 import Control.Error (runScript, Script, scriptIO)
-import Control.Error.Safe (tryAssert)
+import Control.Error.Safe (tryAssert, tryJust)
 import Control.Applicative ((<$>), (<*>))
 import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
@@ -15,7 +15,9 @@ data Options = Options Command
 data Command = CmdSubmit SubmitOpt | CmdList ListOpt | CmdClean CleanOpt
 
 data SubmitOpt = SubmitOpt {
-    _suGroupName :: String
+    _suGroupName :: String,
+    _suForce :: Bool,
+    _suTest :: Bool
 }
 
 data ListOpt = ListOpt {
@@ -32,7 +34,8 @@ type JobProject = [(String, [Task])]
 
 run :: JobProject -> IO ()
 run jobProject =
-    runWithOptions jobProject =<< OP.execParser (parseOptions `withInfo` "tman: A utility for running Data processing jobs")
+    runWithOptions jobProject =<< OP.execParser (parseOptions `withInfo`
+                                                 "tman: A utility for running Data processing jobs")
 
 runWithOptions :: JobProject -> Options -> IO ()
 runWithOptions jobProject (Options cmdOpts) = runScript $ do
@@ -54,16 +57,16 @@ checkUniqueJobGroupNames jobProject =
     in  (length $ nub allGroups) == length allGroups
 
 runSubmit :: JobProject -> SubmitOpt -> Script ()
-runSubmit jobProject (SubmitOpt groupName) = do
-    tasks <- hoistEither $ findGroup jobProject groupName
-    mapM_ tSubmit tasks
+runSubmit jobProject (SubmitOpt groupName force test) = do
+    tasks <- tryJust "group name not found" $ findGroup jobProject groupName
+    mapM_ (tSubmit force test) tasks
 
 runList :: JobProject -> ListOpt -> Script ()
 runList jobProject opt = do
     tasks <- if (_liGroupName opt) == "" then
             return $ concatMap snd jobProject
         else 
-            hoistEither $ findGroup jobProject (_liGroupName opt)
+            tryJust "group name not found" $ findGroup jobProject (_liGroupName opt)
     case (_liWhat opt) of
         "cmd" -> scriptIO (mapM_ putStrLn . map tPrint $ tasks)
         "status" -> do
@@ -72,7 +75,8 @@ runList jobProject opt = do
             if (_liSummary opt) then do
                 statusDicts <- mapM (getStatusDict . snd) jobProject
                 infoDicts <- mapM (getInfoDict . snd) jobProject
-                let l = zipWith3 (\g s i -> format "Job Group {0}: {1} {2}" [fst g, show s, show i]) jobProject statusDicts infoDicts
+                let l = zipWith3 (\g s i -> format "Job Group {0}: {1} {2}" [fst g, show s, show i])
+                                 jobProject statusDicts infoDicts
                 scriptIO $ mapM_ putStrLn l
             else do
                 let l = zipWith3 (\t s i -> format "Job {0}: {1}, {2}" [_tName t, show s, show i]) tasks status info
@@ -88,17 +92,17 @@ runList jobProject opt = do
         info <- mapM tInfo tasks
         return $ foldl (\m s -> M.insertWith (+) s 1 m) M.empty info
 
-findGroup :: JobProject -> String -> Either String [Task]
+findGroup :: JobProject -> String -> Maybe [Task]
 findGroup jobProject name = do
     let found = filter ((==name) . fst) jobProject
     if length found == 0 then
-        Left $ "Job group not found"
+        Nothing
     else
         return . snd . head $ found
 
 runClean :: JobProject -> CleanOpt -> Script ()
 runClean jobProject (CleanOpt groupName) = do
-    tasks <- hoistEither $ findGroup jobProject groupName
+    tasks <- tryJust "group name not found" $ findGroup jobProject groupName
     mapM_ tClean tasks
 
 parseOptions :: OP.Parser Options
@@ -113,7 +117,10 @@ parseCommand = OP.subparser $
 parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
   where
-    parseSubmitOpt = SubmitOpt <$> parseGroupName
+    parseSubmitOpt = SubmitOpt <$> parseGroupName <*> parseForce <*> parseTest
+    parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <> OP.help "force submission"
+    parseTest = OP.switch $ OP.short 't' <> OP.long "test" <>
+                                            OP.help "only print submission commands, do not actually submit"
 
 parseGroupName :: OP.Parser String
 parseGroupName = OP.option OP.str $ OP.short 'g' <> OP.long "jobGroup" <> OP.metavar "<group_desc>" <> OP.value ""

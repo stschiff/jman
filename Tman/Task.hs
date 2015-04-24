@@ -8,28 +8,33 @@ module Tman.Task (
     tInfo,
     tPrint,
     tClean,
-    tMeta
+    tMeta,
+    makedirs
 ) where
 
 import Text.Format (format)
-import System.Directory (doesFileExist, getModificationTime, removeFile)
+import System.Directory (doesFileExist, getModificationTime, removeFile, createDirectoryIfMissing)
 import System.Process (callProcess, spawnProcess)
-import System.IO (stderr, hPutStrLn)
+import System.IO (stderr, hPutStrLn, openFile, IOMode(..), hClose)
 import Control.Error (Script, scriptIO)
 import System.Posix.Files (getFileStatus, fileSize)
 import Control.Monad (when, filterM)
 import Control.Monad.Trans.Either (left)
 import Data.List (intercalate)
 import Data.List.Split (splitOn)
+import System.FilePath.Posix ((</>), (<.>))
 
 data Task = Task {
     _tInputFiles :: [FilePath],
     _tOutputFiles :: [FilePath],
-    _tLogFile :: FilePath,
+    _tLogDir :: FilePath,
     _tCommand :: String,
     _tSubmissionInfo :: SubmissionInfo,
     _tName :: String
 } deriving Show
+
+logFileName :: Task -> FilePath
+logFileName task = (_tLogDir task) </> (_tName task) <.> "log"
 
 data SubmissionInfo = StandardSubmission | LSFsubmission LSFopt deriving Show
 
@@ -37,7 +42,7 @@ data LSFopt = LSFopt {
     _lsfQueue :: String,
     _lsfMem :: Int,
     _lsfThreads :: Int,
-    _lsfLog :: FilePath
+    _lsfGroup :: String
 } deriving Show
 
 data TaskStatus = StatusMissingInput
@@ -45,30 +50,60 @@ data TaskStatus = StatusMissingInput
                 | StatusOutdated
                 | StatusComplete deriving (Eq, Ord, Show)
 
-data TaskInfo = InfoNotStarted
+data TaskInfo = InfoNoLogFile
               | InfoNotFinished
               | InfoFailed
               | InfoSuccess deriving (Eq, Ord, Show)
 
-tSubmit :: Task -> Script ()
-tSubmit task = do
+tSubmit :: Bool -> Bool -> Task -> Script ()
+tSubmit force test task = do
     check <- tCheck task
     case check of
         StatusMissingInput -> left ("missing inputs for task" ++ _tName task)
-        StatusComplete -> left ("task " ++ _tName task ++ " is already complete")
+        StatusComplete -> when (not force) $
+            left ("task " ++ _tName task ++ " is already complete, use --force to run anyway")
+        _ -> return ()
     info <- tInfo task
-    when (info == InfoNotFinished) $ left ("task " ++ _tName task ++ " already running?")
+    when (info == InfoNotFinished && (not force)) $
+        left ("task " ++ _tName task ++ " already running? Use --force to run anyway")
+    let jobFileName = (_tLogDir task) </> (_tName task) <.> "job.sh"
+    scriptIO . makedirs . _tLogDir $ task
+    writeJobScript jobFileName (logFileName task) (_tCommand task)
     case (_tSubmissionInfo task) of
-        LSFsubmission (LSFopt q mem t l) -> do
+        LSFsubmission (LSFopt q mem t g) -> do
             let rArg = format "select[mem>{0}] rusage[mem={0}] span[hosts=1]" [show $ mem]
-                cmd = intercalate " " ["tman_runner.sh", _tLogFile task, _tCommand task]
-                args = ["-J", _tName task, "-q", q, "-R", rArg, "-M", show mem, "-n", show t, "-oo", l, cmd]
-            scriptIO $ callProcess "bsub" args
+                cmd = ["bash", jobFileName]
+                l = (_tLogDir task) </> (_tName task) <.> "bsub.log"
+                args = ["-J", _tName task, "-q", q, "-R", rArg, "-M", show mem, "-n", show t, "-oo", l, "-G", g] ++ cmd
+            if test then
+                scriptIO $ putStrLn (intercalate " " $ wrapCmdArgs ("bsub":args))
+            else
+                scriptIO $ callProcess "bsub" args
         StandardSubmission -> do
-            _ <- scriptIO $ spawnProcess "tman_runner.sh" [_tLogFile task, _tCommand task]
-            scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
-            return ()
+            if test then
+                scriptIO $ putStrLn ("bash " ++ jobFileName)
+            else do
+                _ <- scriptIO $ spawnProcess "bash" [jobFileName]
+                scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
+  where
+    wrapCmdArgs args = [if ' ' `elem` a then "\"" ++ a ++ "\"" else a | a <- args]
 
+makedirs :: FilePath -> IO ()
+makedirs = createDirectoryIfMissing True
+
+writeJobScript :: FilePath -> FilePath -> String -> Script ()
+writeJobScript jobFileName logFileName command = do
+    jobFile <- scriptIO $ openFile jobFileName WriteMode
+    let l = ["printf \"STARTING\\t$(date)\\n\" > " ++ logFileName,
+             "printf \"COMMAND\\t$CMD\\n\" >> " ++ logFileName,
+             "printf \"OUTPUT\\n\" >> " ++ logFileName,
+             command,
+             "EXIT_CODE=$?",
+             "printf \"FINISHED\\t$(date)\\n\" >> " ++ logFileName,
+             "printf \"EXIT CODE\\t$EXIT_CODE\\n\" >> " ++ logFileName]
+    scriptIO $ mapM_ (hPutStrLn jobFile) l
+    scriptIO $ hClose jobFile
+    
 tCheck :: Task -> Script TaskStatus
 tCheck task = do
     iExisting <- scriptIO (mapM doesFileExist $ _tInputFiles task)
@@ -83,18 +118,18 @@ tCheck task = do
         else do
             inputMod <- scriptIO (mapM getModificationTime $ _tInputFiles task)
             outputMod <- scriptIO (mapM getModificationTime $ _tOutputFiles task)
-            if maximum inputMod > minimum outputMod then
-                return StatusOutdated
-            else
+            if null inputMod || maximum inputMod <= minimum outputMod then
                 return StatusComplete
+            else
+                return StatusOutdated
 
 tInfo :: Task -> Script TaskInfo
 tInfo task = do
-    logFileExists <- scriptIO $ doesFileExist (_tLogFile task)
+    logFileExists <- scriptIO $ doesFileExist (logFileName task)
     if not logFileExists then
-        return InfoNotStarted
+        return InfoNoLogFile
     else do
-        l <- scriptIO $ lines `fmap` readFile (_tLogFile task)
+        l <- scriptIO $ lines `fmap` readFile (logFileName task)
         let w = splitOn "\t" $ last l
         if head w /= "EXIT CODE" then
             return InfoNotFinished
@@ -107,7 +142,7 @@ tInfo task = do
 tClean :: Task -> Script ()
 tClean task = do
     scriptIO $ mapM_ removeFileIfExists $ _tOutputFiles task
-    scriptIO . removeFileIfExists $ _tLogFile task
+    scriptIO . removeFileIfExists $ logFileName task
   where
     removeFileIfExists f = do
         exists <- doesFileExist f
@@ -118,6 +153,6 @@ tPrint task = _tCommand task
 
 tMeta :: Task -> String
 tMeta task = 
-    let args = [_tName task, show $ _tInputFiles task, show $ _tOutputFiles task, _tLogFile task,
+    let args = [_tName task, show $ _tInputFiles task, show $ _tOutputFiles task, _tLogDir task,
                 show $ _tSubmissionInfo task]
-    in  format "Name {0}\tIn {1}\tOut {2}\tLog {3}\tSubmission {4}" args
+    in  format "Name {0}\tIn {1}\tOut {2}\tLogDir {3}\tSubmission {4}" args
