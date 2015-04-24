@@ -1,8 +1,8 @@
-module Tman.Task (
+{-# LANGUAGE OverloadedStrings #-}
+
+module Task (
     Task(..),
     TaskStatus(..),
-    SubmissionInfo(..),
-    LSFopt(..),
     tSubmit,
     tCheck,
     tInfo,
@@ -14,36 +14,54 @@ module Tman.Task (
 
 import Text.Format (format)
 import System.Directory (doesFileExist, getModificationTime, removeFile, createDirectoryIfMissing)
+import System.Posix.Files (getFileStatus, fileSize)
+import System.FilePath.Posix ((</>), (<.>), takeDirectory)
 import System.Process (callProcess, spawnProcess)
 import System.IO (stderr, hPutStrLn, openFile, IOMode(..), hClose)
 import Control.Error (Script, scriptIO)
-import System.Posix.Files (getFileStatus, fileSize)
-import Control.Monad (when, filterM)
+import Control.Monad (when, filterM, mzero)
 import Control.Monad.Trans.Either (left)
 import Data.List (intercalate)
 import Data.List.Split (splitOn)
-import System.FilePath.Posix ((</>), (<.>))
+import Control.Applicative ((<*>), (<$>))
+import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=))
 
 data Task = Task {
+    _tName :: String,
     _tInputFiles :: [FilePath],
     _tOutputFiles :: [FilePath],
-    _tLogDir :: FilePath,
     _tCommand :: String,
-    _tSubmissionInfo :: SubmissionInfo,
-    _tName :: String
+    _tMem :: Int,
+    _tNrThreads :: Int,
+    _tSubmissionQueue :: String,
+    _tSubmissionGroup :: String
 } deriving Show
 
-logFileName :: Task -> FilePath
-logFileName task = (_tLogDir task) </> (_tName task) <.> "log"
+instance FromJSON Task where
+    parseJSON (Object v) = Task <$>
+                           v .: "name" <*>
+                           v .: "inputFiles" <*>
+                           v .: "outputFiles" <*>
+                           v .: "command" <*>
+                           v .: "mem" <*>
+                           v .: "nrThreads" <*>
+                           v .: "submissionQueue" <*>
+                           v .: "submissionGroup"
+    parseJSON _         = mzero
 
-data SubmissionInfo = StandardSubmission | LSFsubmission LSFopt deriving Show
+instance ToJSON Task where
+    toJSON (Task n i o c m t q g) =
+        object ["name" .= n,
+                "inputFiles" .= i,
+                "outputFiles" .= o,
+                "command" .= c,
+                "mem" .= m,
+                "nrThreads" .= t,
+                "submissionQueue" .= q,
+                "submissionGroup" .= g]
 
-data LSFopt = LSFopt {
-    _lsfQueue :: String,
-    _lsfMem :: Int,
-    _lsfThreads :: Int,
-    _lsfGroup :: String
-} deriving Show
+logFileName :: FilePath -> Task -> FilePath
+logFileName projectDir task = projectDir </> _tName task <.> "log"
 
 data TaskStatus = StatusMissingInput
                 | StatusIncomplete
@@ -55,26 +73,29 @@ data TaskInfo = InfoNoLogFile
               | InfoFailed
               | InfoSuccess deriving (Eq, Ord, Show)
 
-tSubmit :: Bool -> Bool -> Task -> Script ()
-tSubmit force test task = do
+data SubmissionType = StandardSubmission | LSFsubmission
+
+tSubmit :: FilePath -> Bool -> Bool -> SubmissionType -> Task -> Script ()
+tSubmit projectDir force test submissionType task = do
     check <- tCheck task
     case check of
         StatusMissingInput -> left ("missing inputs for task" ++ _tName task)
         StatusComplete -> when (not force) $
             left ("task " ++ _tName task ++ " is already complete, use --force to run anyway")
         _ -> return ()
-    info <- tInfo task
+    info <- tInfo projectDir task
     when (info == InfoNotFinished && (not force)) $
         left ("task " ++ _tName task ++ " already running? Use --force to run anyway")
-    let jobFileName = (_tLogDir task) </> (_tName task) <.> "job.sh"
-    scriptIO . makedirs . _tLogDir $ task
-    writeJobScript jobFileName (logFileName task) (_tCommand task)
-    case (_tSubmissionInfo task) of
-        LSFsubmission (LSFopt q mem t g) -> do
-            let rArg = format "select[mem>{0}] rusage[mem={0}] span[hosts=1]" [show $ mem]
+    let jobFileName = projectDir </> _tName task <.> "job.sh"
+    scriptIO . makedirs . takeDirectory $ jobFileName
+    writeJobScript jobFileName (logFileName projectDir task) (_tCommand task)
+    case submissionType of
+        LSFsubmission -> do
+            let rArg = format "select[mem>{0}] rusage[mem={0}] span[hosts=1]" [show $ _tMem task]
                 cmd = ["bash", jobFileName]
-                l = (_tLogDir task) </> (_tName task) <.> "bsub.log"
-                args = ["-J", _tName task, "-q", q, "-R", rArg, "-M", show mem, "-n", show t, "-oo", l, "-G", g] ++ cmd
+                l = projectDir </> (_tName task) <.> "bsub.log"
+                args = ["-J", _tName task, "-q", _tSubmissionQueue task, "-R", rArg, "-M", show $ _tMem task,
+                        "-n", show $ _tNrThreads task, "-oo", l, "-G", _tSubmissionGroup task] ++ cmd
             if test then
                 scriptIO $ putStrLn (intercalate " " $ wrapCmdArgs ("bsub":args))
             else
@@ -123,13 +144,13 @@ tCheck task = do
             else
                 return StatusOutdated
 
-tInfo :: Task -> Script TaskInfo
-tInfo task = do
-    logFileExists <- scriptIO $ doesFileExist (logFileName task)
+tInfo :: FilePath -> Task -> Script TaskInfo
+tInfo projectDir task = do
+    logFileExists <- scriptIO $ doesFileExist (logFileName projectDir task)
     if not logFileExists then
         return InfoNoLogFile
     else do
-        l <- scriptIO $ lines `fmap` readFile (logFileName task)
+        l <- scriptIO $ lines `fmap` readFile (logFileName projectDir task)
         let w = splitOn "\t" $ last l
         if head w /= "EXIT CODE" then
             return InfoNotFinished
@@ -139,10 +160,10 @@ tInfo task = do
             else
                 return InfoFailed
 
-tClean :: Task -> Script ()
-tClean task = do
+tClean :: FilePath -> Task -> Script ()
+tClean projectDir task = do
     scriptIO $ mapM_ removeFileIfExists $ _tOutputFiles task
-    scriptIO . removeFileIfExists $ logFileName task
+    scriptIO . removeFileIfExists $ logFileName projectDir task
   where
     removeFileIfExists f = do
         exists <- doesFileExist f
@@ -153,6 +174,5 @@ tPrint task = _tCommand task
 
 tMeta :: Task -> String
 tMeta task = 
-    let args = [_tName task, show $ _tInputFiles task, show $ _tOutputFiles task, _tLogDir task,
-                show $ _tSubmissionInfo task]
-    in  format "Name {0}\tIn {1}\tOut {2}\tLogDir {3}\tSubmission {4}" args
+    let args = [_tName task, show $ _tInputFiles task, show $ _tOutputFiles task]
+    in  format "Name {0}\tIn {1}\tOut {2}\t" args

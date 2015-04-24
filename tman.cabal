@@ -15,10 +15,8 @@ build-type:          Simple
 -- extra-source-files:  
 cabal-version:       >=1.10
 
-library
-  exposed-modules:     Tman, Tman.Run, Tman.Task
-  -- other-modules:       
-  -- other-extensions:    
+executable makeTask
+  main-is:             makeTask.hs
   build-depends:       base,
                        containers,
                        text-format-simple,
@@ -26,9 +24,11 @@ library
                        errors,
                        unix,
                        filepath,
+                       system-filepath,
                        optparse-applicative,
                        either,
                        process,
-                       split
-  -- hs-source-dirs:      
+                       split,
+                       aeson,
+                       bytestring
   default-language:    Haskell2010
