@@ -50,3 +50,22 @@ executable makeProject
                        aeson,
                        bytestring
   default-language:    Haskell2010
+
+executable tman
+  main-is:             tman.hs
+  build-depends:       base,
+                       containers,
+                       text-format-simple,
+                       directory,
+                       errors,
+                       unix,
+                       filepath,
+                       system-filepath,
+                       optparse-applicative,
+                       either,
+                       process,
+                       split,
+                       aeson,
+                       bytestring,
+                       MissingH
+  default-language:    Haskell2010

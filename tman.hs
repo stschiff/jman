@@ -1,126 +1,123 @@
-module Tman.Run (run, findGroup, JobProject) where
-
-import Tman.Task (Task(..), tSubmit, tCheck, tInfo, tPrint, tClean, tMeta)
+import Task (Task(..), tSubmit, tCheck, tInfo, tPrint, tClean, tMeta, SubmissionType(..))
+import Project (Project(..), loadProject, checkUniqueJobNames)
 import Control.Error (runScript, Script, scriptIO)
-import Control.Error.Safe (tryAssert, tryJust)
+import Control.Error.Safe (tryAssert)
 import Control.Applicative ((<$>), (<*>))
 import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
-import Data.List (nub)
-import qualified Data.Map as M
-import Control.Monad.Trans.Either (hoistEither, left)
+-- import qualified Data.Map as M
+import Control.Monad.Trans.Either (left)
 import Text.Format (format)
+import Data.List.Utils (startswith)
+import Data.List.Split (splitOn)
 
-data Options = Options Command
-data Command = CmdSubmit SubmitOpt | CmdList ListOpt | CmdClean CleanOpt
+data Options = Options FilePath Command
+data Command = CmdSubmit SubmitOpt | CmdList ListOpt | CmdPrint PrintOpt | CmdStatus StatusOpt | CmdClean CleanOpt
 
 data SubmitOpt = SubmitOpt {
     _suGroupName :: String,
     _suForce :: Bool,
-    _suTest :: Bool
+    _suTest :: Bool,
+    _suSubmissionType :: String
 }
 
 data ListOpt = ListOpt {
-    _liWhat :: String,
-    _liGroupName :: String,
-    _liSummary :: Bool
+    _liGroupName :: String
+}
+
+data PrintOpt = PrintOpt {
+    _prGroupName :: String
+}
+
+data StatusOpt = StatusOpt {
+    _stGroupName :: String,
+    _stSummary :: Bool
 }
 
 data CleanOpt = CleanOpt {
     _clGroupName :: String
 }
 
-type JobProject = [(String, [Task])]
+main :: IO ()
+main = OP.execParser optParser >>= runWithOptions
+  where
+    optParser = OP.info (OP.helper <*> options) (OP.fullDesc <> OP.progDesc "task processing tool")
 
-run :: JobProject -> IO ()
-run jobProject =
-    runWithOptions jobProject =<< OP.execParser (parseOptions `withInfo`
-                                                 "tman: A utility for running Data processing jobs")
-
-runWithOptions :: JobProject -> Options -> IO ()
-runWithOptions jobProject (Options cmdOpts) = runScript $ do
+runWithOptions :: Options -> IO ()
+runWithOptions (Options projectFileName cmdOpts) = runScript $ do
+    jobProject <- loadProject projectFileName
     tryAssert "job names must be unique" $ checkUniqueJobNames jobProject
-    tryAssert "job group names must be unique" $ checkUniqueJobGroupNames jobProject
     case cmdOpts of
         CmdSubmit opts -> runSubmit jobProject opts
         CmdList opts -> runList jobProject opts
+        CmdPrint opts -> runPrint jobProject opts
+        CmdStatus opts -> runStatus jobProject opts
         CmdClean opts -> runClean jobProject opts
 
-checkUniqueJobNames :: JobProject -> Bool
-checkUniqueJobNames jobProject =
-    let allTasks = map _tName . concatMap snd $ jobProject
-    in  (length $ nub allTasks) == length allTasks
+runSubmit :: Project -> SubmitOpt -> Script ()
+runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
+    let tasks = selectTasks groupName jobProject
+        projectDir = _prLogDir jobProject
+    submissionType <- case submissionType of
+        "lsf" -> return LSFsubmission
+        "standard" -> return StandardSubmission
+        _ -> left "unknown submission type"
+    mapM_ (tSubmit projectDir force test submissionType) tasks
 
-checkUniqueJobGroupNames :: JobProject -> Bool
-checkUniqueJobGroupNames jobProject =
-    let allGroups = map fst jobProject
-    in  (length $ nub allGroups) == length allGroups
+runList :: Project -> ListOpt -> Script ()
+runList jobProject opts = do
+    let tasks = selectTasks (_liGroupName opts) jobProject
+    scriptIO (mapM_ putStrLn . map tMeta $ tasks)
 
-runSubmit :: JobProject -> SubmitOpt -> Script ()
-runSubmit jobProject (SubmitOpt groupName force test) = do
-    tasks <- tryJust "group name not found" $ findGroup jobProject groupName
-    mapM_ (tSubmit force test) tasks
+runPrint :: Project -> PrintOpt -> Script ()
+runPrint jobProject opts = do
+    let tasks = selectTasks (_prGroupName opts) jobProject
+    scriptIO (mapM_ putStrLn . map tPrint $ tasks)
 
-runList :: JobProject -> ListOpt -> Script ()
-runList jobProject opt = do
-    tasks <- if (_liGroupName opt) == "" then
-            return $ concatMap snd jobProject
-        else 
-            tryJust "group name not found" $ findGroup jobProject (_liGroupName opt)
-    case (_liWhat opt) of
-        "cmd" -> scriptIO (mapM_ putStrLn . map tPrint $ tasks)
-        "status" -> do
-            status <- mapM tCheck tasks
-            info <- mapM tInfo tasks
-            if (_liSummary opt) then do
-                statusDicts <- mapM (getStatusDict . snd) jobProject
-                infoDicts <- mapM (getInfoDict . snd) jobProject
-                let l = zipWith3 (\g s i -> format "Job Group {0}: {1} {2}" [fst g, show s, show i])
-                                 jobProject statusDicts infoDicts
-                scriptIO $ mapM_ putStrLn l
-            else do
-                let l = zipWith3 (\t s i -> format "Job {0}: {1}, {2}" [_tName t, show s, show i]) tasks status info
-                scriptIO $ mapM_ putStrLn l
-        "meta" -> do
-            scriptIO (mapM_ putStrLn . map tMeta $ tasks)
-        _ -> left "unknown list feature"
-  where
-    getStatusDict tasks = do
-        status <- mapM tCheck tasks
-        return $ foldl (\m s -> M.insertWith (+) s 1 m) M.empty status
-    getInfoDict tasks = do
-        info <- mapM tInfo tasks
-        return $ foldl (\m s -> M.insertWith (+) s 1 m) M.empty info
+runStatus :: Project -> StatusOpt -> Script ()
+runStatus jobProject opts = do
+    let tasks = selectTasks (_stGroupName opts) jobProject
+    status <- mapM tCheck tasks
+    info <- mapM (tInfo (_prLogDir jobProject)) tasks
+    if (_stSummary opts) then
+        dict
+    else do
+        let l = zipWith3 (\t s i -> format "Job {0}: {1}, {2}" [_tName t, show s, show i]) tasks status info
+        scriptIO $ mapM_ putStrLn l
 
-findGroup :: JobProject -> String -> Maybe [Task]
-findGroup jobProject name = do
-    let found = filter ((==name) . fst) jobProject
-    if length found == 0 then
-        Nothing
-    else
-        return . snd . head $ found
+selectTasks :: String -> Project -> [Task]
+selectTasks group jobProject =
+    if null group then (_prTasks jobProject) else
+        let groupParts = splitOn "/" group
+        in  filter (startswith groupParts . splitOn "/" . _tName) $ _prTasks jobProject
 
-runClean :: JobProject -> CleanOpt -> Script ()
+runClean :: Project -> CleanOpt -> Script ()
 runClean jobProject (CleanOpt groupName) = do
-    tasks <- tryJust "group name not found" $ findGroup jobProject groupName
-    mapM_ tClean tasks
+    let tasks = selectTasks groupName jobProject
+    mapM_ (tClean (_prLogDir jobProject)) tasks
 
-parseOptions :: OP.Parser Options
-parseOptions = Options <$> parseCommand
+options :: OP.Parser Options
+options = Options <$> parseProjectFileName <*> parseCommand
+  where
+    parseProjectFileName = OP.strArgument (OP.metavar "<Project_file>" <> OP.help "Project file to work with")
 
 parseCommand :: OP.Parser Command
 parseCommand = OP.subparser $
     OP.command "submit" (parseSubmit `withInfo` "submit jobs") <>
     OP.command "list" (parseList `withInfo` "list job info") <>
+    OP.command "print" (parsePrint `withInfo` "print commands") <>
+    OP.command "status" (parseStatus `withInfo` "print status for each job") <>
     OP.command "clean" (parseClean `withInfo` "clean output and log files")
 
 parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
   where
-    parseSubmitOpt = SubmitOpt <$> parseGroupName <*> parseForce <*> parseTest
+    parseSubmitOpt = SubmitOpt <$> parseGroupName <*> parseForce <*> parseTest <*> parseSubmissionType
     parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <> OP.help "force submission"
     parseTest = OP.switch $ OP.short 't' <> OP.long "test" <>
                                             OP.help "only print submission commands, do not actually submit"
+    parseSubmissionType = OP.strOption $ OP.short 's' <> OP.long "submissionType" <> OP.value "standard" <>
+                                         OP.showDefault <> OP.help "type of submission [standard | lsf]"
 
 parseGroupName :: OP.Parser String
 parseGroupName = OP.option OP.str $ OP.short 'g' <> OP.long "jobGroup" <> OP.metavar "<group_desc>" <> OP.value ""
@@ -132,8 +129,17 @@ withInfo opts desc = OP.info (OP.helper <*> opts) $ OP.progDesc desc
 parseList :: OP.Parser Command
 parseList = CmdList <$> parseListOpt
   where
-    parseListOpt = ListOpt <$> parseWhat <*> parseGroupName <*> parseSummary
-    parseWhat = OP.argument OP.str $ OP.metavar "<what>" <> OP.help "What to show [cmd, status, meta]"
+    parseListOpt = ListOpt <$> parseGroupName
+
+parsePrint :: OP.Parser Command
+parsePrint = CmdPrint <$> parsePrintOpt
+  where
+    parsePrintOpt = PrintOpt <$> parseGroupName
+
+parseStatus :: OP.Parser Command
+parseStatus = CmdStatus <$> parseStatusOpt
+  where
+    parseStatusOpt = StatusOpt <$> parseGroupName <*> parseSummary
     parseSummary = OP.switch $ OP.short 's' <> OP.long "summary" <> OP.help "for ListCheck: show only summary"
 
 parseClean :: OP.Parser Command

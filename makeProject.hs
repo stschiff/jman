@@ -1,31 +1,15 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 import qualified Data.ByteString.Lazy.Char8 as B
 import Options.Applicative as OP
-import Control.Monad (mzero)
 import Control.Error.Script (runScript, scriptIO)
 import Control.Monad.Trans.Either (hoistEither)
 import Task (Task(..))
-import Data.Aeson (FromJSON, ToJSON, Value(..), parseJSON, (.:), (.=), toJSON, object, encode, eitherDecode)
+import Project (Project(..))
+import Data.Aeson (encode, eitherDecode)
 
 data Options = Options {
     _optName :: String,
     _optLogDir :: FilePath
 }
-
-data Project = Project {
-    _prName :: String,
-    _prLogDir :: FilePath,
-    _prTasks :: [Task]
-}
-
-instance FromJSON Project where
-    parseJSON (Object v) = Project <$> v .: "name" <*> v .: "logDir" <*> v .: "tasks"
-    parseJSON _          = mzero
-
-instance ToJSON Project where
-    toJSON (Project name logDir tasks) =
-        object ["name" .= name, "logDir" .= logDir, "tasks" .= tasks]
 
 main :: IO ()
 main = execParser optParser >>= runWithOptions
@@ -46,4 +30,3 @@ runWithOptions (Options name logDir) = runScript $ do
     let proj = Project name logDir tasks
     scriptIO . B.putStrLn . encode $ proj
 
-    

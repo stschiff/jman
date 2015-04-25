@@ -9,7 +9,8 @@ module Task (
     tPrint,
     tClean,
     tMeta,
-    makedirs
+    makedirs,
+    SubmissionType(..)
 ) where
 
 import Text.Format (format)
