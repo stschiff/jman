@@ -79,11 +79,11 @@ runStatus jobProject opts = do
     let tasks = selectTasks (_stGroupName opts) jobProject
     status <- mapM tCheck tasks
     info <- mapM (tInfo (_prLogDir jobProject)) tasks
-    if (_stSummary opts) then
-        dict
-    else do
-        let l = zipWith3 (\t s i -> format "Job {0}: {1}, {2}" [_tName t, show s, show i]) tasks status info
-        scriptIO $ mapM_ putStrLn l
+    -- if (_stSummary opts) then
+    --     dict
+    -- else do
+    let l = zipWith3 (\t s i -> format "Job {0}: {1}, {2}" [_tName t, show s, show i]) tasks status info
+    scriptIO $ mapM_ putStrLn l
 
 selectTasks :: String -> Project -> [Task]
 selectTasks group jobProject =
@@ -99,7 +99,9 @@ runClean jobProject (CleanOpt groupName) = do
 options :: OP.Parser Options
 options = Options <$> parseProjectFileName <*> parseCommand
   where
-    parseProjectFileName = OP.strArgument (OP.metavar "<Project_file>" <> OP.help "Project file to work with")
+    parseProjectFileName = OP.strOption (OP.short 'p' <> OP.long "projectFile" <> OP.value "tman.project" <>
+                                         OP.showDefault <> OP.metavar "<Project_file>" <>
+                                         OP.help "Project file to work with")
 
 parseCommand :: OP.Parser Command
 parseCommand = OP.subparser $

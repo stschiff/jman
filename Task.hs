@@ -163,7 +163,7 @@ tInfo projectDir task = do
 
 tClean :: FilePath -> Task -> Script ()
 tClean projectDir task = do
-    scriptIO $ mapM_ removeFileIfExists $ _tOutputFiles task
+    -- scriptIO $ mapM_ removeFileIfExists $ _tOutputFiles task
     scriptIO . removeFileIfExists $ logFileName projectDir task
   where
     removeFileIfExists f = do
