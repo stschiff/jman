@@ -76,17 +76,12 @@ data TaskInfo = InfoNoLogFile
 
 data SubmissionType = StandardSubmission | LSFsubmission
 
-tSubmit :: FilePath -> Bool -> Bool -> SubmissionType -> Task -> Script ()
-tSubmit projectDir force test submissionType task = do
+tSubmit :: FilePath -> Bool -> SubmissionType -> Task -> Script ()
+tSubmit projectDir test submissionType task = do
     check <- tCheck task
-    case check of
-        StatusMissingInput -> left ("missing inputs for task" ++ _tName task)
-        StatusComplete -> when (not force) $
-            left ("task " ++ _tName task ++ " is already complete, use --force to run anyway")
-        _ -> return ()
+    when (check == StatusMissingInput) $ left ("missing inputs for task" ++ _tName task)
     info <- tInfo projectDir task
-    when (info == InfoNotFinished && (not force)) $
-        left ("task " ++ _tName task ++ " already running? Use --force to run anyway")
+    when (info == InfoNotFinished) $ left ("task " ++ _tName task ++ " already running? Clean first")
     let jobFileName = projectDir </> _tName task <.> "job.sh"
     scriptIO . makedirs . takeDirectory $ jobFileName
     writeJobScript jobFileName (logFileName projectDir task) (_tCommand task)

@@ -5,11 +5,13 @@ import Control.Error.Safe (tryAssert)
 import Control.Applicative ((<$>), (<*>))
 import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
--- import qualified Data.Map as M
+import qualified Data.Map as M
+import Data.List (intercalate, sortBy)
 import Control.Monad.Trans.Either (left)
 import Text.Format (format)
 import Data.List.Utils (startswith)
 import Data.List.Split (splitOn)
+import Control.Monad (liftM)
 
 data Options = Options FilePath Command
 data Command = CmdSubmit SubmitOpt | CmdList ListOpt | CmdPrint PrintOpt | CmdStatus StatusOpt | CmdClean CleanOpt
@@ -22,7 +24,8 @@ data SubmitOpt = SubmitOpt {
 }
 
 data ListOpt = ListOpt {
-    _liGroupName :: String
+    _liGroupName :: String,
+    _liSummary :: Int
 }
 
 data PrintOpt = PrintOpt {
@@ -31,7 +34,8 @@ data PrintOpt = PrintOpt {
 
 data StatusOpt = StatusOpt {
     _stGroupName :: String,
-    _stSummary :: Bool
+    _stSummary :: Int,
+    _stInfo :: Bool
 }
 
 data CleanOpt = CleanOpt {
@@ -62,12 +66,20 @@ runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
         "lsf" -> return LSFsubmission
         "standard" -> return StandardSubmission
         _ -> left "unknown submission type"
-    mapM_ (tSubmit projectDir force test submissionType) tasks
+    mapM_ (tSubmit projectDir test submissionType) tasks
 
 runList :: Project -> ListOpt -> Script ()
 runList jobProject opts = do
     let tasks = selectTasks (_liGroupName opts) jobProject
-    scriptIO (mapM_ putStrLn . map tMeta $ tasks)
+    let summaryLevel = _liSummary opts
+    if summaryLevel > 0 then do
+        let groups = map (intercalate "/" . take summaryLevel . splitOn "/" . _tName) tasks
+            entries = sortBy (\(e1, _) (e2, _) -> e1 `compare` e2) . M.toList .
+                      foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $ groups
+        scriptIO . mapM_ putStrLn $ [format "Group {0}: {1} {2}" [g, show num, if num == 1 then "job" else "jobs"]
+                                     | (g, num) <- entries]
+    else
+        scriptIO . mapM_ putStrLn . map tMeta $ tasks
 
 runPrint :: Project -> PrintOpt -> Script ()
 runPrint jobProject opts = do
@@ -77,13 +89,19 @@ runPrint jobProject opts = do
 runStatus :: Project -> StatusOpt -> Script ()
 runStatus jobProject opts = do
     let tasks = selectTasks (_stGroupName opts) jobProject
-    status <- mapM tCheck tasks
-    info <- mapM (tInfo (_prLogDir jobProject)) tasks
-    -- if (_stSummary opts) then
-    --     dict
-    -- else do
-    let l = zipWith3 (\t s i -> format "Job {0}: {1}, {2}" [_tName t, show s, show i]) tasks status info
-    scriptIO $ mapM_ putStrLn l
+    labels <- if (_stInfo opts) then
+            mapM (liftM show . tInfo (_prLogDir jobProject)) tasks
+        else
+            mapM (liftM show . tCheck) tasks
+    let summaryLevel = _stSummary opts
+    if summaryLevel > 0 then do
+        let groups = map (intercalate "/" . take summaryLevel . splitOn "/" . _tName) tasks
+            entries = sortBy (\((e1, _), _) ((e2, _), _) -> e1 `compare` e2) . M.toList .
+                      foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $ zip groups labels
+        scriptIO . mapM_ putStrLn $ [format "Group {0}: {1} {2}" [g, l, show num] | ((g, l), num) <- entries]
+    else do
+        let l = zipWith (\t l -> format "Job {0}: {1}" [_tName t, l]) tasks labels
+        scriptIO $ mapM_ putStrLn l
 
 selectTasks :: String -> Project -> [Task]
 selectTasks group jobProject =
@@ -131,7 +149,12 @@ withInfo opts desc = OP.info (OP.helper <*> opts) $ OP.progDesc desc
 parseList :: OP.Parser Command
 parseList = CmdList <$> parseListOpt
   where
-    parseListOpt = ListOpt <$> parseGroupName
+    parseListOpt = ListOpt <$> parseGroupName <*> parseSummary
+
+parseSummary :: OP.Parser Int
+parseSummary = OP.option OP.auto $ OP.short 's' <> OP.long "summaryLevel" <> OP.value 0 <> OP.showDefault <> 
+                                     OP.metavar "<Level>" <>
+                                     OP.help "summarize status for groups at given level, leave 0 for now grouping"
 
 parsePrint :: OP.Parser Command
 parsePrint = CmdPrint <$> parsePrintOpt
@@ -141,8 +164,8 @@ parsePrint = CmdPrint <$> parsePrintOpt
 parseStatus :: OP.Parser Command
 parseStatus = CmdStatus <$> parseStatusOpt
   where
-    parseStatusOpt = StatusOpt <$> parseGroupName <*> parseSummary
-    parseSummary = OP.switch $ OP.short 's' <> OP.long "summary" <> OP.help "for ListCheck: show only summary"
+    parseStatusOpt = StatusOpt <$> parseGroupName <*> parseSummary <*> parseInfo
+    parseInfo = OP.switch $ OP.short 'i' <> OP.long "info" <> OP.help "show runInfo"
 
 parseClean :: OP.Parser Command
 parseClean = CmdClean <$> parseCleanOpt
