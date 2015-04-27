@@ -1,4 +1,4 @@
-import Task (Task(..), tSubmit, tCheck, tInfo, tPrint, tClean, tMeta, SubmissionType(..))
+import Task (Task(..), tSubmit, tCheck, tInfo, tClean, SubmissionType(..), TaskStatus(..), TaskInfo(..))
 import Project (Project(..), loadProject, checkUniqueJobNames)
 import Control.Error (runScript, Script, scriptIO)
 import Control.Error.Safe (tryAssert)
@@ -11,7 +11,7 @@ import Control.Monad.Trans.Either (left)
 import Text.Format (format)
 import Data.List.Utils (startswith)
 import Data.List.Split (splitOn)
-import Control.Monad (liftM)
+import Control.Monad (liftM, forM_, when)
 
 data Options = Options FilePath Command
 data Command = CmdSubmit SubmitOpt | CmdList ListOpt | CmdPrint PrintOpt | CmdStatus StatusOpt | CmdClean CleanOpt
@@ -62,11 +62,27 @@ runSubmit :: Project -> SubmitOpt -> Script ()
 runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
     let tasks = selectTasks groupName jobProject
         projectDir = _prLogDir jobProject
+    status <- mapM tCheck tasks
+    info <- mapM (tInfo projectDir) tasks
     submissionType <- case submissionType of
         "lsf" -> return LSFsubmission
         "standard" -> return StandardSubmission
         _ -> left "unknown submission type"
-    mapM_ (tSubmit projectDir test submissionType) tasks
+    forM_ (zip3 tasks status info) $ \(t, s, i) -> do
+        if i == InfoNotFinished then do
+            let msg = format "Job {0}: already running? skipping. Use --clean to reset" [_tName t]
+            scriptIO . putStrLn $ msg
+        else
+            case s of
+                StatusMissingInput -> scriptIO . putStrLn $ format "Job {0}: missing input, skipping" [_tName t] 
+                StatusComplete -> if force then
+                        tSubmit projectDir test submissionType t
+                    else do
+                        let msg = format "Job {0}: already complete, skipping (use --force to submit anyway)"
+                                         [_tName t] 
+                        scriptIO . putStrLn $ msg
+                _ -> tSubmit projectDir test submissionType t
+        
 
 runList :: Project -> ListOpt -> Script ()
 runList jobProject opts = do
@@ -78,13 +94,19 @@ runList jobProject opts = do
                       foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $ groups
         scriptIO . mapM_ putStrLn $ [format "Group {0}: {1} {2}" [g, show num, if num == 1 then "job" else "jobs"]
                                      | (g, num) <- entries]
-    else
+    else do
+        scriptIO . putStrLn . intercalate "\t" $ ["NAME", "MEMORY", "THREADS", "SUBMISSION-QUEUE", "SUBMISSION-GROUP", 
+                                                  "INPUTFILES", "OUTPUTFILES"]
         scriptIO . mapM_ putStrLn . map tMeta $ tasks
+  where
+    tMeta (Task n i o c m t q g) = 
+        intercalate "\t" [n, show m, show t, q, g, intercalate "," i, intercalate "," o]
+        
 
 runPrint :: Project -> PrintOpt -> Script ()
 runPrint jobProject opts = do
     let tasks = selectTasks (_prGroupName opts) jobProject
-    scriptIO (mapM_ putStrLn . map tPrint $ tasks)
+    scriptIO (mapM_ putStrLn . map _tCommand $ tasks)
 
 runStatus :: Project -> StatusOpt -> Script ()
 runStatus jobProject opts = do
@@ -133,7 +155,7 @@ parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
   where
     parseSubmitOpt = SubmitOpt <$> parseGroupName <*> parseForce <*> parseTest <*> parseSubmissionType
-    parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <> OP.help "force submission"
+    parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <> OP.help "force submission of completed tasks"
     parseTest = OP.switch $ OP.short 't' <> OP.long "test" <>
                                             OP.help "only print submission commands, do not actually submit"
     parseSubmissionType = OP.strOption $ OP.short 's' <> OP.long "submissionType" <> OP.value "standard" <>

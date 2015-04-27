@@ -3,19 +3,18 @@
 module Task (
     Task(..),
     TaskStatus(..),
+    TaskInfo(..),
     tSubmit,
     tCheck,
     tInfo,
-    tPrint,
     tClean,
-    tMeta,
     makedirs,
     SubmissionType(..)
 ) where
 
 import Text.Format (format)
 import System.Directory (doesFileExist, getModificationTime, removeFile, createDirectoryIfMissing)
-import System.Posix.Files (getFileStatus, fileSize)
+import System.Posix.Files (getFileStatus, fileSize, touchFile)
 import System.FilePath.Posix ((</>), (<.>), takeDirectory)
 import System.Process (callProcess, spawnProcess)
 import System.IO (stderr, hPutStrLn, openFile, IOMode(..), hClose)
@@ -83,8 +82,9 @@ tSubmit projectDir test submissionType task = do
     info <- tInfo projectDir task
     when (info == InfoNotFinished) $ left ("task " ++ _tName task ++ " already running? Clean first")
     let jobFileName = projectDir </> _tName task <.> "job.sh"
+        logFile = logFileName projectDir task
     scriptIO . makedirs . takeDirectory $ jobFileName
-    writeJobScript jobFileName (logFileName projectDir task) (_tCommand task)
+    writeJobScript jobFileName logFile (_tCommand task)
     case submissionType of
         LSFsubmission -> do
             let rArg = format "select[mem>{0}] rusage[mem={0}] span[hosts=1]" [show $ _tMem task]
@@ -94,12 +94,14 @@ tSubmit projectDir test submissionType task = do
                         "-n", show $ _tNrThreads task, "-oo", l, "-G", _tSubmissionGroup task] ++ cmd
             if test then
                 scriptIO $ putStrLn (intercalate " " $ wrapCmdArgs ("bsub":args))
-            else
+            else do
+                scriptIO . touchFile $ logFile
                 scriptIO $ callProcess "bsub" args
         StandardSubmission -> do
             if test then
                 scriptIO $ putStrLn ("bash " ++ jobFileName)
             else do
+                scriptIO . touchFile $ logFile
                 _ <- scriptIO $ spawnProcess "bash" [jobFileName]
                 scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
   where
@@ -112,7 +114,7 @@ writeJobScript :: FilePath -> FilePath -> String -> Script ()
 writeJobScript jobFileName logFileName command = do
     jobFile <- scriptIO $ openFile jobFileName WriteMode
     let l = ["printf \"STARTING\\t$(date)\\n\" > " ++ logFileName,
-             "printf \"COMMAND\\t$CMD\\n\" >> " ++ logFileName,
+             format "printf \"COMMAND\\t{0}\\n\" >> {1}" [command, logFileName],
              "printf \"OUTPUT\\n\" >> " ++ logFileName,
              command,
              "EXIT_CODE=$?",
@@ -164,11 +166,3 @@ tClean projectDir task = do
     removeFileIfExists f = do
         exists <- doesFileExist f
         when exists $ removeFile f
-
-tPrint :: Task -> String
-tPrint task = _tCommand task
-
-tMeta :: Task -> String
-tMeta task = 
-    let args = [_tName task, show $ _tInputFiles task, show $ _tOutputFiles task]
-    in  format "Name {0}\tIn {1}\tOut {2}\t" args
