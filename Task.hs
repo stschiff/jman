@@ -95,17 +95,21 @@ tSubmit projectDir test submissionType task = do
             if test then
                 scriptIO $ putStrLn (intercalate " " $ wrapCmdArgs ("bsub":args))
             else do
-                scriptIO . touchFile $ logFile
+                scriptIO . touch $ logFile
                 scriptIO $ callProcess "bsub" args
         StandardSubmission -> do
             if test then
                 scriptIO $ putStrLn ("bash " ++ jobFileName)
             else do
-                scriptIO . touchFile $ logFile
+                scriptIO . touch $ logFile
                 _ <- scriptIO $ spawnProcess "bash" [jobFileName]
                 scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
   where
     wrapCmdArgs args = [if ' ' `elem` a then "\"" ++ a ++ "\"" else a | a <- args]
+    touch path = do
+        ex <- doesFileExist path
+        if ex then touchFile path else writeFile path ""
+            
 
 makedirs :: FilePath -> IO ()
 makedirs = createDirectoryIfMissing True
@@ -116,7 +120,7 @@ writeJobScript jobFileName logFileName command = do
     let l = ["printf \"STARTING\\t$(date)\\n\" > " ++ logFileName,
              format "printf \"COMMAND\\t{0}\\n\" >> {1}" [command, logFileName],
              "printf \"OUTPUT\\n\" >> " ++ logFileName,
-             command,
+             format "( {0} ) 2>&1 >> {1}" [command, logFileName],
              "EXIT_CODE=$?",
              "printf \"FINISHED\\t$(date)\\n\" >> " ++ logFileName,
              "printf \"EXIT CODE\\t$EXIT_CODE\\n\" >> " ++ logFileName]

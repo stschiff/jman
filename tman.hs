@@ -6,7 +6,7 @@ import Control.Applicative ((<$>), (<*>))
 import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
 import qualified Data.Map as M
-import Data.List (intercalate, sortBy)
+import Data.List (intercalate, sortBy, groupBy)
 import Control.Monad.Trans.Either (left)
 import Text.Format (format)
 import Data.List.Utils (startswith)
@@ -118,9 +118,14 @@ runStatus jobProject opts = do
     let summaryLevel = _stSummary opts
     if summaryLevel > 0 then do
         let groups = map (intercalate "/" . take summaryLevel . splitOn "/" . _tName) tasks
-            entries = sortBy (\((e1, _), _) ((e2, _), _) -> e1 `compare` e2) . M.toList .
-                      foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $ zip groups labels
-        scriptIO . mapM_ putStrLn $ [format "Group {0}: {1} {2}" [g, l, show num] | ((g, l), num) <- entries]
+            dict :: M.Map (String, String) Int
+            dict = foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $ zip groups labels
+            entries = map (\subList -> (fst . fst . head $ subList, [(s, c) | ((_, s), c) <- subList])) .
+                      groupBy (\((e1, _), _) ((e2, _), _) -> e1 == e2) .
+                      sortBy (\((e1, _), _) ((e2, _), _) -> e1 `compare` e2) . M.toList $ dict
+        scriptIO . mapM_ putStrLn $ 
+            ["Group " ++ g ++ ": " ++ intercalate ", " [format "{0}({1})" [s, show c] | (s, c) <- l] |
+             (g, l) <- entries]
     else do
         let l = zipWith (\t l -> format "Job {0}: {1}" [_tName t, l]) tasks labels
         scriptIO $ mapM_ putStrLn l
