@@ -1,4 +1,4 @@
-import Task (Task(..), tSubmit, tCheck, tInfo, tClean, SubmissionType(..), TaskStatus(..), TaskInfo(..))
+import Task (Task(..), tSubmit, tCheck, tInfo, tClean, tLog, SubmissionType(..), TaskStatus(..), TaskInfo(..))
 import Project (Project(..), loadProject, checkUniqueJobNames)
 import Control.Error (runScript, Script, scriptIO)
 import Control.Error.Safe (tryAssert)
@@ -7,14 +7,15 @@ import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
 import qualified Data.Map as M
 import Data.List (intercalate, sortBy, groupBy)
-import Control.Monad.Trans.Either (left)
+import Control.Monad.Trans.Either (left, hoistEither)
 import Text.Format (format)
 import Data.List.Utils (startswith)
 import Data.List.Split (splitOn)
 import Control.Monad (liftM, forM_, when)
 
 data Options = Options FilePath Command
-data Command = CmdSubmit SubmitOpt | CmdList ListOpt | CmdPrint PrintOpt | CmdStatus StatusOpt | CmdClean CleanOpt
+data Command = CmdSubmit SubmitOpt | CmdList ListOpt | CmdPrint PrintOpt | CmdStatus StatusOpt | CmdClean CleanOpt |
+               CmdLog LogOpt
 
 data SubmitOpt = SubmitOpt {
     _suGroupName :: String,
@@ -25,7 +26,8 @@ data SubmitOpt = SubmitOpt {
 
 data ListOpt = ListOpt {
     _liGroupName :: String,
-    _liSummary :: Int
+    _liSummary :: Int,
+    _liFull :: Bool
 }
 
 data PrintOpt = PrintOpt {
@@ -40,6 +42,10 @@ data StatusOpt = StatusOpt {
 
 data CleanOpt = CleanOpt {
     _clGroupName :: String
+}
+
+data LogOpt = LogOpt {
+    _loTaskName :: String
 }
 
 main :: IO ()
@@ -57,11 +63,12 @@ runWithOptions (Options projectFileName cmdOpts) = runScript $ do
         CmdPrint opts -> runPrint jobProject opts
         CmdStatus opts -> runStatus jobProject opts
         CmdClean opts -> runClean jobProject opts
+        CmdLog opts -> runLog jobProject opts
 
 runSubmit :: Project -> SubmitOpt -> Script ()
 runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
-    let tasks = selectTasks groupName jobProject
-        projectDir = _prLogDir jobProject
+    tasks <- hoistEither $ selectTasks groupName jobProject
+    let projectDir = _prLogDir jobProject
     status <- mapM tCheck tasks
     info <- mapM (tInfo projectDir) tasks
     submissionType <- case submissionType of
@@ -86,7 +93,7 @@ runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
 
 runList :: Project -> ListOpt -> Script ()
 runList jobProject opts = do
-    let tasks = selectTasks (_liGroupName opts) jobProject
+    tasks <- hoistEither $ selectTasks (_liGroupName opts) jobProject
     let summaryLevel = _liSummary opts
     if summaryLevel > 0 then do
         let groups = map (intercalate "/" . take summaryLevel . splitOn "/" . _tName) tasks
@@ -95,22 +102,25 @@ runList jobProject opts = do
         scriptIO . mapM_ putStrLn $ [format "Group {0}: {1} {2}" [g, show num, if num == 1 then "job" else "jobs"]
                                      | (g, num) <- entries]
     else do
-        scriptIO . putStrLn . intercalate "\t" $ ["NAME", "MEMORY", "THREADS", "SUBMISSION-QUEUE", "SUBMISSION-GROUP", 
+        let indices = if (_liFull opts) then [0..6] else [0..4]
+            headers = ["NAME", "MEMORY", "THREADS", "SUBMISSION-QUEUE", "SUBMISSION-GROUP", 
                                                   "INPUTFILES", "OUTPUTFILES"]
-        scriptIO . mapM_ putStrLn . map tMeta $ tasks
+        scriptIO . putStrLn . intercalate "\t" . map (headers!!) $ indices
+        scriptIO . mapM_ putStrLn . map (tMeta indices) $ tasks
   where
-    tMeta (Task n i o c m t q g) = 
-        intercalate "\t" [n, show m, show t, q, g, intercalate "," i, intercalate "," o]
+    tMeta indices (Task n i o c m t q g) =
+        let vals = [n, show m, show t, q, g, intercalate "," i, intercalate "," o]
+        in  intercalate "\t" . map (vals!!) $ indices
         
 
 runPrint :: Project -> PrintOpt -> Script ()
 runPrint jobProject opts = do
-    let tasks = selectTasks (_prGroupName opts) jobProject
+    tasks <- hoistEither $ selectTasks (_prGroupName opts) jobProject
     scriptIO (mapM_ putStrLn . map _tCommand $ tasks)
 
 runStatus :: Project -> StatusOpt -> Script ()
 runStatus jobProject opts = do
-    let tasks = selectTasks (_stGroupName opts) jobProject
+    tasks <- hoistEither $ selectTasks (_stGroupName opts) jobProject
     labels <- if (_stInfo opts) then
             mapM (liftM show . tInfo (_prLogDir jobProject)) tasks
         else
@@ -130,16 +140,27 @@ runStatus jobProject opts = do
         let l = zipWith (\t l -> format "Job {0}: {1}" [_tName t, l]) tasks labels
         scriptIO $ mapM_ putStrLn l
 
-selectTasks :: String -> Project -> [Task]
+selectTasks :: String -> Project -> Either String [Task]
 selectTasks group jobProject =
-    if null group then (_prTasks jobProject) else
-        let groupParts = splitOn "/" group
-        in  filter (startswith groupParts . splitOn "/" . _tName) $ _prTasks jobProject
+    let ret = if null group then
+            (_prTasks jobProject)
+        else
+            filter (startswith groupParts . splitOn "/" . _tName) $ _prTasks jobProject
+    in  if null ret then Left "No Tasks found" else Right ret
+  where
+    groupParts = splitOn "/" group
 
 runClean :: Project -> CleanOpt -> Script ()
 runClean jobProject (CleanOpt groupName) = do
-    let tasks = selectTasks groupName jobProject
+    tasks <- hoistEither $ selectTasks groupName jobProject
     mapM_ (tClean (_prLogDir jobProject)) tasks
+
+runLog :: Project -> LogOpt -> Script ()
+runLog jobProject (LogOpt taskName) = do
+    let tasks = filter ((==taskName) . _tName) . _prTasks $ jobProject
+    case tasks of
+        (task:_) -> tLog (_prLogDir jobProject) task
+        [] -> left "task not found"
 
 options :: OP.Parser Options
 options = Options <$> parseProjectFileName <*> parseCommand
@@ -154,7 +175,8 @@ parseCommand = OP.subparser $
     OP.command "list" (parseList `withInfo` "list job info") <>
     OP.command "print" (parsePrint `withInfo` "print commands") <>
     OP.command "status" (parseStatus `withInfo` "print status for each job") <>
-    OP.command "clean" (parseClean `withInfo` "clean output and log files")
+    OP.command "clean" (parseClean `withInfo` "clean output and log files") <>
+    OP.command "log" (parseLog `withInfo` "print log file for a task")
 
 parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
@@ -176,7 +198,8 @@ withInfo opts desc = OP.info (OP.helper <*> opts) $ OP.progDesc desc
 parseList :: OP.Parser Command
 parseList = CmdList <$> parseListOpt
   where
-    parseListOpt = ListOpt <$> parseGroupName <*> parseSummary
+    parseListOpt = ListOpt <$> parseGroupName <*> parseSummary <*> parseFull
+    parseFull = OP.switch $ OP.short 'f' <> OP.long "full" <> OP.help "show full list"
 
 parseSummary :: OP.Parser Int
 parseSummary = OP.option OP.auto $ OP.short 's' <> OP.long "summaryLevel" <> OP.value 0 <> OP.showDefault <> 
@@ -199,4 +222,9 @@ parseClean = CmdClean <$> parseCleanOpt
   where
     parseCleanOpt = CleanOpt <$> parseGroupName
 
+parseLog :: OP.Parser Command
+parseLog = CmdLog <$> parseLogOpt
+  where
+    parseLogOpt = LogOpt <$> parseTaskName
+    parseTaskName = OP.strArgument $ OP.metavar "<Task>" <> OP.help "task name"
     

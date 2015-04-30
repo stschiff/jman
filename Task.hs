@@ -8,6 +8,7 @@ module Task (
     tCheck,
     tInfo,
     tClean,
+    tLog,
     makedirs,
     SubmissionType(..)
 ) where
@@ -120,7 +121,7 @@ writeJobScript jobFileName logFileName command = do
     let l = ["printf \"STARTING\\t$(date)\\n\" > " ++ logFileName,
              format "printf \"COMMAND\\t{0}\\n\" >> {1}" [command, logFileName],
              "printf \"OUTPUT\\n\" >> " ++ logFileName,
-             format "( {0} ) 2>&1 >> {1}" [command, logFileName],
+             format "( {0} ) 2>> {1}" [command, logFileName],
              "EXIT_CODE=$?",
              "printf \"FINISHED\\t$(date)\\n\" >> " ++ logFileName,
              "printf \"EXIT CODE\\t$EXIT_CODE\\n\" >> " ++ logFileName]
@@ -153,14 +154,15 @@ tInfo projectDir task = do
         return InfoNoLogFile
     else do
         l <- scriptIO $ lines `fmap` readFile (logFileName projectDir task)
-        let w = splitOn "\t" $ last l
-        if head w /= "EXIT CODE" then
-            return InfoNotFinished
-        else
-            if last w == "0" then do
-                return InfoSuccess
+        if null l then return InfoFailed else do
+            let w = splitOn "\t" $ last l
+            if head w /= "EXIT CODE" then
+                return InfoNotFinished
             else
-                return InfoFailed
+                if last w == "0" then do
+                    return InfoSuccess
+                else
+                    return InfoFailed
 
 tClean :: FilePath -> Task -> Script ()
 tClean projectDir task = do
@@ -170,3 +172,6 @@ tClean projectDir task = do
     removeFileIfExists f = do
         exists <- doesFileExist f
         when exists $ removeFile f
+
+tLog :: FilePath -> Task -> Script ()
+tLog projectDir task = scriptIO $ readFile (logFileName projectDir task) >>= putStr
