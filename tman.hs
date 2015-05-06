@@ -1,4 +1,4 @@
-import Task (Task(..), tSubmit, tCheck, tInfo, tClean, tLog, SubmissionType(..), TaskStatus(..), TaskInfo(..))
+import Task (Task(..), tSubmit, recursiveCheckAll, tInfo, tClean, tLog, tLsfLog, SubmissionType(..), TaskStatus(..), TaskInfo(..))
 import Project (Project(..), loadProject, checkUniqueJobNames)
 import Control.Error (runScript, Script, scriptIO)
 import Control.Error.Safe (tryAssert)
@@ -45,7 +45,8 @@ data CleanOpt = CleanOpt {
 }
 
 data LogOpt = LogOpt {
-    _loTaskName :: String
+    _loTaskName :: String,
+    _loLSF :: Bool
 }
 
 main :: IO ()
@@ -69,7 +70,7 @@ runSubmit :: Project -> SubmitOpt -> Script ()
 runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
     tasks <- hoistEither $ selectTasks groupName jobProject
     let projectDir = _prLogDir jobProject
-    status <- mapM tCheck tasks
+    status <- recursiveCheckAll tasks
     info <- mapM (tInfo projectDir) tasks
     submissionType <- case submissionType of
         "lsf" -> return LSFsubmission
@@ -82,6 +83,7 @@ runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
         else
             case s of
                 StatusMissingInput -> scriptIO . putStrLn $ format "Job {0}: missing input, skipping" [_tName t] 
+                StatusOutdatedR -> scriptIO . putStrLn $ format "Job {0}: outdated input, skipping" [_tName t] 
                 StatusComplete -> if force then
                         tSubmit projectDir test submissionType t
                     else do
@@ -122,9 +124,9 @@ runStatus :: Project -> StatusOpt -> Script ()
 runStatus jobProject opts = do
     tasks <- hoistEither $ selectTasks (_stGroupName opts) jobProject
     labels <- if (_stInfo opts) then
-            mapM (liftM show . tInfo (_prLogDir jobProject)) tasks
+            mapM (fmap show . tInfo (_prLogDir jobProject)) tasks
         else
-            mapM (liftM show . tCheck) tasks
+            map show <$> recursiveCheckAll tasks
     let summaryLevel = _stSummary opts
     if summaryLevel > 0 then do
         let groups = map (intercalate "/" . take summaryLevel . splitOn "/" . _tName) tasks
@@ -156,11 +158,13 @@ runClean jobProject (CleanOpt groupName) = do
     mapM_ (tClean (_prLogDir jobProject)) tasks
 
 runLog :: Project -> LogOpt -> Script ()
-runLog jobProject (LogOpt taskName) = do
-    let tasks = filter ((==taskName) . _tName) . _prTasks $ jobProject
-    case tasks of
-        (task:_) -> tLog (_prLogDir jobProject) task
+runLog jobProject (LogOpt taskName lsf) =
+    task >>= logFunc (_prLogDir jobProject)
+  where
+    task = case filter ((==taskName) . _tName) . _prTasks $ jobProject of
+        (task:_) -> return task
         [] -> left "task not found"
+    logFunc = if lsf then tLsfLog else tLog
 
 options :: OP.Parser Options
 options = Options <$> parseProjectFileName <*> parseCommand
@@ -225,6 +229,7 @@ parseClean = CmdClean <$> parseCleanOpt
 parseLog :: OP.Parser Command
 parseLog = CmdLog <$> parseLogOpt
   where
-    parseLogOpt = LogOpt <$> parseTaskName
+    parseLogOpt = LogOpt <$> parseTaskName <*> parseLogLSF
     parseTaskName = OP.strArgument $ OP.metavar "<Task>" <> OP.help "task name"
+    parseLogLSF = OP.switch $ OP.short 'l' <> OP.long "lsf" <> OP.help "show lsf log file"
     

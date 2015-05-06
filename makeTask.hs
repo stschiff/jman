@@ -43,8 +43,7 @@ options = Options <$> OP.strArgument (OP.metavar "<NAME>" <>
                                     OP.help "queue name (only for LSF submission)")
                   <*> OP.strOption (OP.long "group" <> OP.short 'g' <> OP.metavar "<Farm-Group>" <>
                                     OP.value "" <> OP.showDefault <>
-                                    OP.help ("Farm group, uses Environment variable $LSF_DEFAULTGROUP if left" ++
-                                             " blank (only for LSF submission)"))
+                                    OP.help ("Farm group, can be left blank to use default group"))
 
 runWithOptions :: Options -> IO ()
 runWithOptions opts = runScript $ do

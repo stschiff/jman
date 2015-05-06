@@ -5,10 +5,11 @@ module Task (
     TaskStatus(..),
     TaskInfo(..),
     tSubmit,
-    tCheck,
+    recursiveCheckAll,
     tInfo,
     tClean,
     tLog,
+    tLsfLog,
     makedirs,
     SubmissionType(..)
 ) where
@@ -19,13 +20,16 @@ import System.Posix.Files (getFileStatus, fileSize, touchFile)
 import System.FilePath.Posix ((</>), (<.>), takeDirectory)
 import System.Process (callProcess, spawnProcess)
 import System.IO (stderr, hPutStrLn, openFile, IOMode(..), hClose)
-import Control.Error (Script, scriptIO)
+import Control.Error.Script (Script, scriptIO)
+import Control.Error.Safe (tryAssert)
 import Control.Monad (when, filterM, mzero)
 import Control.Monad.Trans.Either (left)
 import Data.List (intercalate)
 import Data.List.Split (splitOn)
 import Control.Applicative ((<*>), (<$>))
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=))
+import qualified Data.Map.Strict as M
+import Data.Maybe (catMaybes)
 
 data Task = Task {
     _tName :: String,
@@ -67,6 +71,7 @@ logFileName projectDir task = projectDir </> _tName task <.> "log"
 data TaskStatus = StatusMissingInput
                 | StatusIncomplete
                 | StatusOutdated
+                | StatusOutdatedR
                 | StatusComplete deriving (Eq, Ord, Show)
 
 data TaskInfo = InfoNoLogFile
@@ -91,8 +96,10 @@ tSubmit projectDir test submissionType task = do
             let rArg = format "select[mem>{0}] rusage[mem={0}] span[hosts=1]" [show $ _tMem task]
                 cmd = ["bash", jobFileName]
                 l = projectDir </> (_tName task) <.> "bsub.log"
-                args = ["-J", _tName task, "-q", _tSubmissionQueue task, "-R", rArg, "-M", show $ _tMem task,
-                        "-n", show $ _tNrThreads task, "-oo", l, "-G", _tSubmissionGroup task] ++ cmd
+                lsf_args = ["-J", _tName task, "-q", _tSubmissionQueue task, "-R", rArg, "-M", show $ _tMem task,
+                        "-n", show $ _tNrThreads task, "-oo", l]
+                group_args = if null $ _tSubmissionGroup task then [] else ["-G", _tSubmissionGroup task]
+                args = lsf_args ++ group_args ++ cmd
             if test then
                 scriptIO $ putStrLn (intercalate " " $ wrapCmdArgs ("bsub":args))
             else do
@@ -147,6 +154,29 @@ tCheck task = do
             else
                 return StatusOutdated
 
+recursiveCheckAll :: [Task] -> Script [TaskStatus]
+recursiveCheckAll tasks = do
+    let outputFileTable = concatMap (\t -> [(f, t) | f <- _tOutputFiles t]) tasks
+        fileTaskLookup = M.fromList outputFileTable
+    tryAssert "Error: multiple tasks have same output file" $ M.size fileTaskLookup == length outputFileTable
+    taskStatusLookup <- M.fromList . map (\(t, s) -> (_tName t, s)) . zip tasks <$> mapM tCheck tasks
+    return $ map (recursiveCheck fileTaskLookup taskStatusLookup) tasks
+
+recursiveCheck :: M.Map FilePath Task -> M.Map String TaskStatus -> Task -> TaskStatus
+recursiveCheck fileTaskLookup taskStatusLookup task =
+    if (rawStatus == StatusIncomplete) || (rawStatus == StatusMissingInput) then
+        rawStatus
+    else
+        if any (/= StatusComplete) allInputStatus then
+            StatusOutdatedR
+        else
+            rawStatus
+  where
+    rawStatus = taskStatusLookup M.! (_tName task)
+    allInputStatus = map (recursiveCheck fileTaskLookup taskStatusLookup) allInputTasks
+    allInputTasks = catMaybes . map (\f -> M.lookup f fileTaskLookup) . _tInputFiles $ task
+            
+
 tInfo :: FilePath -> Task -> Script TaskInfo
 tInfo projectDir task = do
     logFileExists <- scriptIO $ doesFileExist (logFileName projectDir task)
@@ -166,7 +196,6 @@ tInfo projectDir task = do
 
 tClean :: FilePath -> Task -> Script ()
 tClean projectDir task = do
-    -- scriptIO $ mapM_ removeFileIfExists $ _tOutputFiles task
     scriptIO . removeFileIfExists $ logFileName projectDir task
   where
     removeFileIfExists f = do
@@ -175,3 +204,8 @@ tClean projectDir task = do
 
 tLog :: FilePath -> Task -> Script ()
 tLog projectDir task = scriptIO $ readFile (logFileName projectDir task) >>= putStr
+
+tLsfLog :: FilePath -> Task -> Script ()
+tLsfLog projectDir task = scriptIO $ readFile logFile >>= putStr
+  where
+    logFile = projectDir </> (_tName task) <.> "bsub.log"
