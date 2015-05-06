@@ -1,4 +1,5 @@
-import Task (Task(..), tSubmit, recursiveCheckAll, tInfo, tClean, tLog, tLsfLog, SubmissionType(..), TaskStatus(..), TaskInfo(..))
+import Task (Task(..), tSubmit, recursiveCheckAll, tInfo, tClean, tLog, tLsfLog, tLsfKill, SubmissionType(..), 
+             TaskStatus(..), TaskInfo(..))
 import Project (Project(..), loadProject, checkUniqueJobNames)
 import Control.Error (runScript, Script, scriptIO)
 import Control.Error.Safe (tryAssert)
@@ -12,10 +13,11 @@ import Text.Format (format)
 import Data.List.Utils (startswith)
 import Data.List.Split (splitOn)
 import Control.Monad (liftM, forM_, when)
+import System.FilePath.GlobPattern ((~~))
 
 data Options = Options FilePath Command
 data Command = CmdSubmit SubmitOpt | CmdList ListOpt | CmdPrint PrintOpt | CmdStatus StatusOpt | CmdClean CleanOpt |
-               CmdLog LogOpt
+               CmdLog LogOpt | CmdKill KillOpt
 
 data SubmitOpt = SubmitOpt {
     _suGroupName :: String,
@@ -45,8 +47,13 @@ data CleanOpt = CleanOpt {
 }
 
 data LogOpt = LogOpt {
-    _loTaskName :: String,
+    _loGroupName :: String,
     _loLSF :: Bool
+}
+
+data KillOpt = KillOpt {
+    _kiGroupName :: String,
+    _kiLSF :: Bool
 }
 
 main :: IO ()
@@ -65,6 +72,7 @@ runWithOptions (Options projectFileName cmdOpts) = runScript $ do
         CmdStatus opts -> runStatus jobProject opts
         CmdClean opts -> runClean jobProject opts
         CmdLog opts -> runLog jobProject opts
+        CmdKill opts -> runKill jobProject opts
 
 runSubmit :: Project -> SubmitOpt -> Script ()
 runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
@@ -147,10 +155,11 @@ selectTasks group jobProject =
     let ret = if null group then
             (_prTasks jobProject)
         else
-            filter (startswith groupParts . splitOn "/" . _tName) $ _prTasks jobProject
-    in  if null ret then Left "No Tasks found" else Right ret
-  where
-    groupParts = splitOn "/" group
+            -- filter (startswith groupParts . splitOn "/" . _tName) $ _prTasks jobProject
+            filter ((~~ group) . _tName) . _prTasks $ jobProject
+     in  if null ret then Left "No Tasks found" else Right ret
+  -- where
+  --   groupParts = splitOn "/" group
 
 runClean :: Project -> CleanOpt -> Script ()
 runClean jobProject (CleanOpt groupName) = do
@@ -158,13 +167,20 @@ runClean jobProject (CleanOpt groupName) = do
     mapM_ (tClean (_prLogDir jobProject)) tasks
 
 runLog :: Project -> LogOpt -> Script ()
-runLog jobProject (LogOpt taskName lsf) =
-    task >>= logFunc (_prLogDir jobProject)
+runLog jobProject (LogOpt groupName lsf) = do
+    task <- hoistEither $ selectTasks groupName jobProject
+    tryAssert "multiple tasks found, must select one" $ length task > 1
+    logFunc (_prLogDir jobProject) . head $ task
   where
-    task = case filter ((==taskName) . _tName) . _prTasks $ jobProject of
-        (task:_) -> return task
-        [] -> left "task not found"
     logFunc = if lsf then tLsfLog else tLog
+
+runKill :: Project -> KillOpt -> Script ()
+runKill jobProject (KillOpt groupName lsf) = do
+    tasks <- hoistEither $ selectTasks groupName jobProject
+    if lsf then
+        mapM_ tLsfKill tasks
+    else
+        left "killing non-LSF jobs not yet implemented"
 
 options :: OP.Parser Options
 options = Options <$> parseProjectFileName <*> parseCommand
@@ -180,7 +196,8 @@ parseCommand = OP.subparser $
     OP.command "print" (parsePrint `withInfo` "print commands") <>
     OP.command "status" (parseStatus `withInfo` "print status for each job") <>
     OP.command "clean" (parseClean `withInfo` "clean output and log files") <>
-    OP.command "log" (parseLog `withInfo` "print log file for a task")
+    OP.command "log" (parseLog `withInfo` "print log file for a task") <>
+    OP.command "kill" (parseKill `withInfo` "kill jobs")
 
 parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
@@ -229,7 +246,11 @@ parseClean = CmdClean <$> parseCleanOpt
 parseLog :: OP.Parser Command
 parseLog = CmdLog <$> parseLogOpt
   where
-    parseLogOpt = LogOpt <$> parseTaskName <*> parseLogLSF
-    parseTaskName = OP.strArgument $ OP.metavar "<Task>" <> OP.help "task name"
+    parseLogOpt = LogOpt <$> parseGroupName <*> parseLogLSF
     parseLogLSF = OP.switch $ OP.short 'l' <> OP.long "lsf" <> OP.help "show lsf log file"
     
+parseKill :: OP.Parser Command
+parseKill = CmdKill <$> parseKillOpt
+  where
+    parseKillOpt = KillOpt <$> parseGroupName <*> parseKillLSF
+    parseKillLSF = OP.switch $ OP.short 'l' <> OP.long "lsf" <> OP.help "via LSF"

@@ -10,6 +10,7 @@ module Task (
     tClean,
     tLog,
     tLsfLog,
+    tLsfKill,
     makedirs,
     SubmissionType(..)
 ) where
@@ -209,3 +210,9 @@ tLsfLog :: FilePath -> Task -> Script ()
 tLsfLog projectDir task = scriptIO $ readFile logFile >>= putStr
   where
     logFile = projectDir </> (_tName task) <.> "bsub.log"
+
+tLsfKill :: Task -> Script ()
+tLsfKill task = do
+    _ <- scriptIO $ spawnProcess "bkill" ["-J", _tName task]
+    return ()
+    
