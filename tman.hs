@@ -169,7 +169,7 @@ runClean jobProject (CleanOpt groupName) = do
 runLog :: Project -> LogOpt -> Script ()
 runLog jobProject (LogOpt groupName lsf) = do
     task <- hoistEither $ selectTasks groupName jobProject
-    tryAssert "multiple tasks found, must select one" $ length task > 1
+    tryAssert "multiple tasks found, must select one" $ length task == 1
     logFunc (_prLogDir jobProject) . head $ task
   where
     logFunc = if lsf then tLsfLog else tLog
