@@ -117,7 +117,7 @@ runList jobProject opts = do
         scriptIO . putStrLn . intercalate "\t" . map (headers!!) $ indices
         scriptIO . mapM_ putStrLn . map (tMeta indices) $ tasks
   where
-    tMeta indices (Task n i o c m t q g) =
+    tMeta indices (Task n i o _ m t q g) =
         let vals = [n, show m, show t, q, g, intercalate "," i, intercalate "," o]
         in  intercalate "\t" . map (vals!!) $ indices
         
