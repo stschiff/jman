@@ -12,7 +12,8 @@ module Task (
     tLsfLog,
     tLsfKill,
     makedirs,
-    SubmissionType(..)
+    SubmissionType(..),
+    printTask
 ) where
 
 import Text.Format (format)
@@ -28,7 +29,8 @@ import Control.Monad.Trans.Either (left)
 import Data.List (intercalate)
 import Data.List.Split (splitOn)
 import Control.Applicative ((<*>), (<$>))
-import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=))
+import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=), encode)
+import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 
@@ -42,6 +44,7 @@ data Task = Task {
     _tSubmissionQueue :: String,
     _tSubmissionGroup :: String
 } deriving Show
+
 
 instance FromJSON Task where
     parseJSON (Object v) = Task <$>
@@ -215,4 +218,6 @@ tLsfKill :: Task -> Script ()
 tLsfKill task = do
     _ <- scriptIO $ spawnProcess "bkill" ["-J", _tName task]
     return ()
-    
+
+printTask :: Task -> IO ()
+printTask task = B.putStrLn . encode $ task

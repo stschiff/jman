@@ -1,11 +1,9 @@
 import qualified Options.Applicative as OP
 import Control.Error.Script (runScript, scriptIO)
 import Control.Monad.Trans.Either (hoistEither)
-import Data.Aeson (encode)
-import Task (Task(..))
+import Task (Task(..), printTask)
 import Control.Applicative ((<$>), (<*>), many)
 import Data.Monoid ((<>))
-import qualified Data.ByteString.Lazy.Char8 as B
 
 data Options = Options {
     _optName :: String,
@@ -48,7 +46,7 @@ options = Options <$> OP.strArgument (OP.metavar "<NAME>" <>
 runWithOptions :: Options -> IO ()
 runWithOptions opts = runScript $ do
     task <- hoistEither $ makeTask opts
-    scriptIO . B.putStrLn . encode $ task
+    scriptIO . printTask $ task
 
 makeTask :: Options -> Either String Task
 makeTask (Options n c i o m t q g) =  return $ Task n i o c m t q g

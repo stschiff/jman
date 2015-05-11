@@ -10,9 +10,8 @@ import qualified Data.Map as M
 import Data.List (intercalate, sortBy, groupBy)
 import Control.Monad.Trans.Either (left, hoistEither)
 import Text.Format (format)
-import Data.List.Utils (startswith)
 import Data.List.Split (splitOn)
-import Control.Monad (liftM, forM_, when)
+import Control.Monad (forM_)
 import System.FilePath.GlobPattern ((~~))
 
 data Options = Options FilePath Command
