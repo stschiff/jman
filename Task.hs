@@ -4,9 +4,11 @@ module Task (
     Task(..),
     TaskStatus(..),
     TaskInfo(..),
+    LSFInfo(..),
     tSubmit,
     recursiveCheckAll,
     tInfo,
+    tLSFInfo,
     tClean,
     tLog,
     tLsfLog,
@@ -20,17 +22,17 @@ import Text.Format (format)
 import System.Directory (doesFileExist, getModificationTime, removeFile, createDirectoryIfMissing)
 import System.Posix.Files (getFileStatus, fileSize, touchFile)
 import System.FilePath.Posix ((</>), (<.>), takeDirectory)
-import System.Process (callProcess, spawnProcess)
+import System.Process (callProcess, spawnProcess, readProcess)
 import System.IO (stderr, hPutStrLn, openFile, IOMode(..), hClose)
 import Control.Error.Script (Script, scriptIO)
 import Control.Error.Safe (tryAssert)
 import Control.Monad (when, filterM, mzero)
 import Control.Monad.Trans.Either (left)
-import Data.List (intercalate)
+import Data.List (intercalate, isInfixOf)
 import Data.List.Split (splitOn)
+import qualified Data.ByteString.Lazy.Char8 as B
 import Control.Applicative ((<*>), (<$>))
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=), encode)
-import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 
@@ -82,6 +84,13 @@ data TaskInfo = InfoNoLogFile
               | InfoNotFinished
               | InfoFailed
               | InfoSuccess deriving (Eq, Ord, Show)
+
+data LSFInfo = LSFInfoNoLogFile
+              | LSFInfoNotFinished
+              | LSFInfoMemFailed
+              | LSFInfoRuntimeFailed
+              | LSFInfoUnknownFailed
+              | LSFInfoSuccess deriving (Eq, Ord, Show)
 
 data SubmissionType = StandardSubmission | LSFsubmission
 
@@ -168,7 +177,7 @@ recursiveCheckAll tasks = do
 
 recursiveCheck :: M.Map FilePath Task -> M.Map String TaskStatus -> Task -> TaskStatus
 recursiveCheck fileTaskLookup taskStatusLookup task =
-    if (rawStatus == StatusIncomplete) || (rawStatus == StatusMissingInput) then
+    if rawStatus == StatusMissingInput then
         rawStatus
     else
         if any (/= StatusComplete) allInputStatus then
@@ -187,9 +196,9 @@ tInfo projectDir task = do
     if not logFileExists then
         return InfoNoLogFile
     else do
-        l <- scriptIO $ lines `fmap` readFile (logFileName projectDir task)
+        l <- scriptIO $ B.lines `fmap` B.readFile (logFileName projectDir task)
         if null l then return InfoFailed else do
-            let w = splitOn "\t" $ last l
+            let w = B.split '\t' . last $ l
             if head w /= "EXIT CODE" then
                 return InfoNotFinished
             else
@@ -198,21 +207,55 @@ tInfo projectDir task = do
                 else
                     return InfoFailed
 
+tLSFInfo :: FilePath -> Task -> Script LSFInfo
+tLSFInfo projectDir task = do
+    let lf = projectDir </> (_tName task) <.> "bsub.log"
+    logFileExists <- scriptIO . doesFileExist $ lf
+    if not logFileExists then
+        return LSFInfoNoLogFile
+    else do
+        c <- scriptIO $ readProcess "tail" ["-100", lf] ""
+        if null c then return LSFInfoNotFinished else
+            if "Resource usage summary:" `isInfixOf` c then
+                if "Successfully completed." `isInfixOf` c then return LSFInfoSuccess else
+                    if "TERM_MEMLIMIT" `isInfixOf` c then return LSFInfoMemFailed else
+                        if "TERM_RUNLIMIT" `isInfixOf` c then return LSFInfoRuntimeFailed else
+                            return LSFInfoUnknownFailed
+            else return LSFInfoNotFinished
+
 tClean :: FilePath -> Task -> Script ()
 tClean projectDir task = do
     scriptIO . removeFileIfExists $ logFileName projectDir task
+    scriptIO . removeFileIfExists $ projectDir </> (_tName task) <.> "bsub.log"
   where
     removeFileIfExists f = do
         exists <- doesFileExist f
         when exists $ removeFile f
 
 tLog :: FilePath -> Task -> Script ()
-tLog projectDir task = scriptIO $ readFile (logFileName projectDir task) >>= putStr
+tLog projectDir task = scriptIO $ do
+    ex <- doesFileExist fn
+    putStrLn $ "Task: " ++ _tName task
+    if not ex then
+        putStrLn "Log file doesn't exist"
+    else
+        readFile fn >>= putStr
+    putStrLn ""
+  where
+    fn = logFileName projectDir task
 
 tLsfLog :: FilePath -> Task -> Script ()
-tLsfLog projectDir task = scriptIO $ readFile logFile >>= putStr
+tLsfLog projectDir task = scriptIO $ do
+    ex <- doesFileExist fn
+    putStrLn $ "Task: " ++ _tName task
+    if not ex then
+        putStrLn "Lsf Log file doesn't exist"
+    else
+        readFile fn >>= putStr
+    putStrLn ""
   where
-    logFile = projectDir </> (_tName task) <.> "bsub.log"
+    fn = projectDir </> (_tName task) <.> "bsub.log"
+    
 
 tLsfKill :: Task -> Script ()
 tLsfKill task = do

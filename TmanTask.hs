@@ -5,20 +5,26 @@ module TmanTask (task,
                  mem,
                  nrThreads,
                  submissionQueue,
-                 submissionGroup) where
+                 submissionGroup,
+                 (&),
+                 Task) where
     
 import Task (Task(..), printTask)
+import Prelude hiding (FilePath)
+import Filesystem.Path (FilePath)
+import Filesystem.Path.CurrentOS (encodeString)
+import Data.Text (unpack, Text)
 
-task :: String -> String -> Task
-task name command = Task name [] [] command 100 1 "normal" ""
+task :: FilePath -> Text -> Task
+task name command = Task (encodeString name) [] [] (unpack command) 100 1 "normal" ""
 
 type Setter a = a -> Task -> Task
 
 inputFiles :: Setter [FilePath]
-inputFiles files task = task {_tInputFiles = files}
+inputFiles i task = task {_tInputFiles = map encodeString i}
 
 outputFiles :: Setter [FilePath]
-outputFiles o task = task {_tOutputFiles = o}
+outputFiles o task = task {_tOutputFiles = map encodeString o}
 
 mem :: Setter Int
 mem m task = task {_tMem = m}
@@ -26,8 +32,12 @@ mem m task = task {_tMem = m}
 nrThreads :: Setter Int
 nrThreads t task = task {_tNrThreads = t}
 
-submissionQueue :: Setter String
-submissionQueue q task = task {_tSubmissionQueue = q}
+submissionQueue :: Setter Text
+submissionQueue q task = task {_tSubmissionQueue = unpack q}
 
-submissionGroup :: Setter String
-submissionGroup g task = task {_tSubmissionGroup = g}
+submissionGroup :: Setter Text
+submissionGroup g task = task {_tSubmissionGroup = unpack g}
+
+(&) :: a -> (a -> b) -> b
+a & f = f a
+infixl 1 &
