@@ -1,8 +1,7 @@
 import Task (Task(..), tSubmit, recursiveCheckAll, tInfo, tLSFInfo, tClean, tLog, tLsfLog, tLsfKill, 
              SubmissionType(..), TaskStatus(..), TaskInfo(..), LSFInfo(..))
 import Project (Project(..), loadProject, checkUniqueJobNames)
-import Control.Error (runScript, Script, scriptIO)
-import Control.Error.Safe (tryAssert)
+import Control.Error (runScript, Script, scriptIO, err, tryAssert)
 import Control.Applicative ((<$>), (<*>))
 import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
@@ -65,7 +64,9 @@ main = OP.execParser optParser >>= runWithOptions
 
 runWithOptions :: Options -> IO ()
 runWithOptions (Options projectFileName cmdOpts) = runScript $ do
+    scriptIO . err $ "loading project file " ++ projectFileName ++ "\n"
     jobProject <- loadProject projectFileName
+    scriptIO . err $ "project loaded\n"
     tryAssert "job names must be unique" $ checkUniqueJobNames jobProject
     case cmdOpts of
         CmdSubmit opts -> runSubmit jobProject opts
