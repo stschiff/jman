@@ -92,7 +92,7 @@ data LSFInfo = LSFInfoNoLogFile
               | LSFInfoUnknownFailed
               | LSFInfoSuccess deriving (Eq, Ord, Show)
 
-data SubmissionType = StandardSubmission | LSFsubmission
+data SubmissionType = StandardSubmission | LSFsubmission | SequentialSubmission
 
 tSubmit :: FilePath -> Bool -> SubmissionType -> Task -> Script ()
 tSubmit projectDir test submissionType task = do
@@ -124,6 +124,13 @@ tSubmit projectDir test submissionType task = do
             else do
                 scriptIO . touch $ logFile
                 _ <- scriptIO $ spawnProcess "bash" [jobFileName]
+                scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
+        SequentialSubmission -> do
+            if test then
+                scriptIO $ putStrLn ("bash " ++ jobFileName)
+            else do
+                scriptIO . touch $ logFile
+                _ <- scriptIO $ callProcess "bash" [jobFileName]
                 scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
   where
     wrapCmdArgs args = [if ' ' `elem` a then "\"" ++ a ++ "\"" else a | a <- args]

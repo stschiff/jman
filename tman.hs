@@ -86,6 +86,7 @@ runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
     submissionType <- case submissionType of
         "lsf" -> return LSFsubmission
         "standard" -> return StandardSubmission
+        "seq" -> return SequentialSubmission
         _ -> left "unknown submission type"
     forM_ (zip3 tasks status info) $ \(t, s, i) -> do
         if i == InfoNotFinished then do
