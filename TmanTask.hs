@@ -4,6 +4,7 @@ module TmanTask (task,
                  outputFiles,
                  mem,
                  nrThreads,
+                 (&),
                  submissionQueue,
                  submissionGroup,
                  Task) where
@@ -37,6 +38,6 @@ submissionQueue q task = task {_tSubmissionQueue = unpack q}
 submissionGroup :: Setter Text
 submissionGroup g task = task {_tSubmissionGroup = unpack g}
 
--- (&) :: a -> (a -> b) -> b
--- a & f = f a
--- infixl 1 &
+(&) :: a -> (a -> b) -> b
+a & f = f a
+infixl 1 &
