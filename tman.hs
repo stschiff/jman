@@ -22,7 +22,8 @@ data SubmitOpt = SubmitOpt {
     _suGroupName :: String,
     _suForce :: Bool,
     _suTest :: Bool,
-    _suSubmissionType :: String
+    _suSubmissionType :: String,
+    _suUnchecked :: Bool
 }
 
 data ListOpt = ListOpt {
@@ -78,11 +79,11 @@ runWithOptions (Options projectFileName cmdOpts) = runScript $ do
         CmdKill opts -> runKill jobProject opts
 
 runSubmit :: Project -> SubmitOpt -> Script ()
-runSubmit jobProject (SubmitOpt groupName force test submissionType) = do
+runSubmit jobProject (SubmitOpt groupName force test submissionType unchecked) = do
     tasks <- hoistEither $ selectTasks groupName jobProject
     let projectDir = _prLogDir jobProject
-    status <- recursiveCheckAll tasks
-    info <- mapM (tInfo projectDir) tasks
+    status <- if unchecked then return $ repeat StatusIncomplete else recursiveCheckAll tasks
+    info <- if unchecked then return $ repeat InfoNoLogFile else mapM (tInfo projectDir) tasks
     submissionType <- case submissionType of
         "lsf" -> return LSFsubmission
         "standard" -> return StandardSubmission
@@ -233,12 +234,14 @@ parseCommand = OP.subparser $
 parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
   where
-    parseSubmitOpt = SubmitOpt <$> parseGroupName <*> parseForce <*> parseTest <*> parseSubmissionType
+    parseSubmitOpt = SubmitOpt <$> parseGroupName <*> parseForce <*> parseTest <*> parseSubmissionType <*>
+                     parseUnchecked
     parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <> OP.help "force submission of completed tasks"
     parseTest = OP.switch $ OP.short 't' <> OP.long "test" <>
                                             OP.help "only print submission commands, do not actually submit"
     parseSubmissionType = OP.strOption $ OP.short 's' <> OP.long "submissionType" <> OP.value "standard" <>
                                          OP.showDefault <> OP.help "type of submission [standard | lsf]"
+    parseUnchecked = OP.switch $ OP.short 'u' <> OP.long "unchecked" <> OP.help "do not check any status, just submit (this is even stronger than force and should be given with care)"
 
 parseGroupName :: OP.Parser String
 parseGroupName = OP.option OP.str $ OP.short 'g' <> OP.long "jobGroup" <> OP.metavar "<group_desc>" <> OP.value ""

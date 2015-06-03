@@ -96,10 +96,6 @@ data SubmissionType = StandardSubmission | LSFsubmission | SequentialSubmission
 
 tSubmit :: FilePath -> Bool -> SubmissionType -> Task -> Script ()
 tSubmit projectDir test submissionType task = do
-    check <- tCheck task
-    when (check == StatusMissingInput) $ left ("missing inputs for task" ++ _tName task)
-    info <- tInfo projectDir task
-    when (info == InfoNotFinished) $ left ("task " ++ _tName task ++ " already running? Clean first")
     let jobFileName = projectDir </> _tName task <.> "job.sh"
         logFile = logFileName projectDir task
     scriptIO . makedirs . takeDirectory $ jobFileName
