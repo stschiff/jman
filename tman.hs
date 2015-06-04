@@ -243,8 +243,7 @@ parseSubmit = CmdSubmit <$> parseSubmitOpt
     parseUnchecked = OP.switch $ OP.short 'u' <> OP.long "unchecked" <> OP.help "do not check any status, just submit (this is even stronger than force and should be given with care)"
 
 parseGroupName :: OP.Parser String
-parseGroupName = OP.option OP.str $ OP.short 'g' <> OP.long "jobGroup" <> OP.metavar "<group_desc>" <> OP.value ""
-                                                 <> OP.help "Job group name"
+parseGroupName = OP.strArgument $ OP.metavar "<group_desc>" <> OP.help "Job group name"
 
 withInfo :: OP.Parser a -> String -> OP.ParserInfo a
 withInfo opts desc = OP.info (OP.helper <*> opts) $ OP.progDesc desc
