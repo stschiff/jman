@@ -2,7 +2,7 @@ import qualified Options.Applicative as OP
 import Control.Error.Script (runScript, scriptIO)
 import Control.Monad.Trans.Either (hoistEither)
 import Task (Task(..), printTask)
-import Control.Applicative ((<$>), (<*>), many)
+import Control.Applicative (many)
 import Data.Monoid ((<>))
 
 data Options = Options {

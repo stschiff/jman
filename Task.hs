@@ -27,11 +27,8 @@ import System.IO (stderr, hPutStrLn, openFile, IOMode(..), hClose)
 import Control.Error.Script (Script, scriptIO)
 import Control.Error.Safe (tryAssert)
 import Control.Monad (when, filterM, mzero)
-import Control.Monad.Trans.Either (left)
 import Data.List (intercalate, isInfixOf)
-import Data.List.Split (splitOn)
 import qualified Data.ByteString.Lazy.Char8 as B
-import Control.Applicative ((<*>), (<$>))
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=), encode)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)

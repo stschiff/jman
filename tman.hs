@@ -2,7 +2,6 @@ import Task (Task(..), tSubmit, recursiveCheckAll, tInfo, tLSFInfo, tClean, tLog
              SubmissionType(..), TaskStatus(..), TaskInfo(..), LSFInfo(..))
 import Project (Project(..), loadProject, checkUniqueJobNames)
 import Control.Error (runScript, Script, scriptIO, err, tryAssert)
-import Control.Applicative ((<$>), (<*>))
 import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
 import qualified Data.Map as M

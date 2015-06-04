@@ -4,7 +4,6 @@ module Project (Project(..), loadProject, checkUniqueJobNames) where
 
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object, eitherDecode)
 import Task (Task(..))
-import Control.Applicative ((<$>), (<*>))
 import Control.Monad (mzero)
 import Control.Error.Script (Script, scriptIO)
 import qualified Data.ByteString.Lazy.Char8 as B
