@@ -40,7 +40,8 @@ data StatusOpt = StatusOpt {
     _stSummary :: Int,
     _stInfo :: Bool,
     _stLSFInfo :: Bool,
-    _stSkipSuccessful :: Bool
+    _stSkipSuccessful :: Bool,
+    _stVerbose :: Bool
 }
 
 data CleanOpt = CleanOpt {
@@ -66,7 +67,6 @@ runWithOptions :: Options -> IO ()
 runWithOptions (Options projectFileName cmdOpts) = runScript $ do
     scriptIO . err $ "loading project file " ++ projectFileName ++ "\n"
     jobProject <- loadProject projectFileName
-    scriptIO . err $ "project loaded\n"
     tryAssert "job names must be unique" $ checkUniqueJobNames jobProject
     case cmdOpts of
         CmdSubmit opts -> runSubmit jobProject opts
@@ -81,8 +81,8 @@ runSubmit :: Project -> SubmitOpt -> Script ()
 runSubmit jobProject (SubmitOpt groupName force test submissionType unchecked) = do
     tasks <- hoistEither $ selectTasks groupName jobProject
     let projectDir = _prLogDir jobProject
-    status <- if unchecked then return $ repeat StatusIncomplete else recursiveCheckAll tasks
-    info <- if unchecked then return $ repeat InfoNoLogFile else mapM (tInfo projectDir) tasks
+    status <- if unchecked then return $ repeat StatusIncomplete else recursiveCheckAll False tasks
+    info <- if unchecked then return $ repeat InfoNoLogFile else mapM (tInfo projectDir False) tasks
     submissionType <- case submissionType of
         "lsf" -> return LSFsubmission
         "standard" -> return StandardSubmission
@@ -135,17 +135,18 @@ runPrint jobProject opts = do
 runStatus :: Project -> StatusOpt -> Script ()
 runStatus jobProject opts = do
     tasks <- hoistEither $ selectTasks (_stGroupName opts) jobProject
+    let verbose = _stVerbose opts
     fullStatusList <- do 
         let allTasks = _prTasks jobProject
-        allStatus <- recursiveCheckAll allTasks
+        allStatus <- recursiveCheckAll verbose allTasks
         let allTaskMap = M.fromList $ zip (map _tName allTasks) allStatus
             status = [allTaskMap M.! n | n <- map _tName tasks]
         info <- if _stInfo opts then
-                    mapM (fmap Just . tInfo (_prLogDir jobProject)) tasks
+                    mapM (fmap Just . tInfo (_prLogDir jobProject) verbose) tasks
                 else
                     return [Nothing | _ <- tasks]
         lsfInfo <- if _stLSFInfo opts then
-                       mapM (fmap Just . tLSFInfo (_prLogDir jobProject)) tasks
+                       mapM (fmap Just . tLSFInfo (_prLogDir jobProject) verbose) tasks
                    else
                        return [Nothing | _ <- tasks]
         return $ zip3 status info lsfInfo
@@ -191,7 +192,7 @@ selectTasks group jobProject =
 runClean :: Project -> CleanOpt -> Script ()
 runClean jobProject (CleanOpt groupName) = do
     tasks <- hoistEither $ selectTasks groupName jobProject
-    infos <- mapM (tInfo (_prLogDir jobProject)) tasks
+    infos <- mapM (tInfo (_prLogDir jobProject) False) tasks
     forM_ (zip tasks infos) $ \(task, info) -> do
         if info == InfoNotFinished then
             tClean (_prLogDir jobProject) task
@@ -243,7 +244,7 @@ parseSubmit = CmdSubmit <$> parseSubmitOpt
     parseUnchecked = OP.switch $ OP.short 'u' <> OP.long "unchecked" <> OP.help "do not check any status, just submit (this is even stronger than force and should be given with care)"
 
 parseGroupName :: OP.Parser String
-parseGroupName = OP.strArgument $ OP.metavar "<group_desc>" <> OP.help "Job group name"
+parseGroupName = OP.strArgument $ OP.metavar "<group_desc>" <> OP.help "Job group name" <> OP.value "" <> OP.showDefault
 
 withInfo :: OP.Parser a -> String -> OP.ParserInfo a
 withInfo opts desc = OP.info (OP.helper <*> opts) $ OP.progDesc desc
@@ -268,10 +269,11 @@ parseStatus :: OP.Parser Command
 parseStatus = CmdStatus <$> parseStatusOpt
   where
     parseStatusOpt = StatusOpt <$> parseGroupName <*> parseSummary <*> parseInfo <*> parseLSFInfo <*> 
-                     parseSkipSuccessful
+                     parseSkipSuccessful <*> parseVerbose
     parseInfo = OP.switch $ OP.short 'i' <> OP.long "info" <> OP.help "show runInfo"
     parseLSFInfo = OP.switch $ OP.short 'l' <> OP.long "LSFInfo" <> OP.help "show lsfInfo"
     parseSkipSuccessful = OP.switch $ OP.short 'S' <> OP.long "skipSuccessful" <> OP.help "skip complete tasks or tasks without a logfile, if -i and/or -l is used"
+    parseVerbose = OP.switch $ OP.short 'v' <> OP.long "verbose" <> OP.help "verbose output"
 
 parseClean :: OP.Parser Command
 parseClean = CmdClean <$> parseCleanOpt

@@ -24,8 +24,7 @@ import System.Posix.Files (getFileStatus, fileSize, touchFile)
 import System.FilePath.Posix ((</>), (<.>), takeDirectory)
 import System.Process (callProcess, spawnProcess, readProcess)
 import System.IO (stderr, hPutStrLn, openFile, IOMode(..), hClose)
-import Control.Error.Script (Script, scriptIO)
-import Control.Error.Safe (tryAssert)
+import Control.Error (Script, scriptIO, tryAssert, err)
 import Control.Monad (when, filterM, mzero)
 import Data.List (intercalate, isInfixOf)
 import qualified Data.ByteString.Lazy.Char8 as B
@@ -148,9 +147,10 @@ writeJobScript jobFileName logFileName command = do
     scriptIO $ mapM_ (hPutStrLn jobFile) l
     scriptIO $ hClose jobFile
     
-tCheck :: Task -> Script TaskStatus
-tCheck task = do
+tCheck :: Bool -> Task -> Script TaskStatus
+tCheck verbose task = do
     iExisting <- scriptIO (mapM doesFileExist $ _tInputFiles task)
+    when verbose $ scriptIO . err $ "checking task " ++ _tName task ++ "\n"
     iFileStatus <- scriptIO $ filterM doesFileExist (_tInputFiles task) >>= mapM getFileStatus
     if (not $ and iExisting) || or (map ((==0) . fileSize) iFileStatus) then
         return StatusMissingInput
@@ -167,12 +167,12 @@ tCheck task = do
             else
                 return StatusOutdated
 
-recursiveCheckAll :: [Task] -> Script [TaskStatus]
-recursiveCheckAll tasks = do
+recursiveCheckAll :: Bool -> [Task] -> Script [TaskStatus]
+recursiveCheckAll verbose tasks = do
     let outputFileTable = concatMap (\t -> [(f, t) | f <- _tOutputFiles t]) tasks
         fileTaskLookup = M.fromList outputFileTable
     tryAssert "Error: multiple tasks have same output file" $ M.size fileTaskLookup == length outputFileTable
-    taskStatusLookup <- M.fromList . map (\(t, s) -> (_tName t, s)) . zip tasks <$> mapM tCheck tasks
+    taskStatusLookup <- M.fromList . map (\(t, s) -> (_tName t, s)) . zip tasks <$> mapM (tCheck verbose) tasks
     return $ map (recursiveCheck fileTaskLookup taskStatusLookup) tasks
 
 recursiveCheck :: M.Map FilePath Task -> M.Map String TaskStatus -> Task -> TaskStatus
@@ -190,8 +190,9 @@ recursiveCheck fileTaskLookup taskStatusLookup task =
     allInputTasks = catMaybes . map (\f -> M.lookup f fileTaskLookup) . _tInputFiles $ task
             
 
-tInfo :: FilePath -> Task -> Script TaskInfo
-tInfo projectDir task = do
+tInfo :: FilePath -> Bool -> Task -> Script TaskInfo
+tInfo projectDir verbose task = do
+    when verbose $ scriptIO . err $ "checking task " ++ _tName task ++ "\n"
     logFileExists <- scriptIO $ doesFileExist (logFileName projectDir task)
     if not logFileExists then
         return InfoNoLogFile
@@ -207,8 +208,9 @@ tInfo projectDir task = do
                 else
                     return InfoFailed
 
-tLSFInfo :: FilePath -> Task -> Script LSFInfo
-tLSFInfo projectDir task = do
+tLSFInfo :: FilePath -> Bool -> Task -> Script LSFInfo
+tLSFInfo projectDir verbose task = do
+    when verbose $ scriptIO . err $ "checking task " ++ _tName task ++ "\n"
     let lf = projectDir </> (_tName task) <.> "bsub.log"
     logFileExists <- scriptIO . doesFileExist $ lf
     if not logFileExists then
