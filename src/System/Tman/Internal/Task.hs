@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Task (
+module System.Tman.Internal.Task (
     Task(..),
     TaskStatus(..),
     TaskInfo(..),
@@ -18,7 +18,6 @@ module Task (
     printTask
 ) where
 
-import Text.Format (format)
 import System.Directory (doesFileExist, getModificationTime, removeFile, createDirectoryIfMissing)
 import System.Posix.Files (getFileStatus, fileSize, touchFile)
 import System.FilePath.Posix ((</>), (<.>), takeDirectory)
@@ -98,7 +97,8 @@ tSubmit projectDir test submissionType task = do
     writeJobScript jobFileName logFile (_tCommand task)
     case submissionType of
         LSFsubmission -> do
-            let rArg = format "select[mem>{0}] rusage[mem={0}] span[hosts=1]" [show $ _tMem task]
+            let memStr = show $ _tMem task
+            let rArg = "select[mem>" ++ memStr ++ "] rusage[mem=" ++ memStr ++ "] span[hosts=1]"
                 cmd = ["bash", jobFileName]
                 l = projectDir </> (_tName task) <.> "bsub.log"
                 lsf_args = ["-J", _tName task, "-q", _tSubmissionQueue task, "-R", rArg, "-M", show $ _tMem task,
@@ -138,9 +138,9 @@ writeJobScript :: FilePath -> FilePath -> String -> Script ()
 writeJobScript jobFileName logFileName command = do
     jobFile <- scriptIO $ openFile jobFileName WriteMode
     let l = ["printf \"STARTING\\t$(date)\\n\" > " ++ logFileName,
-             format "printf \"COMMAND\\t{0}\\n\" >> {1}" [command, logFileName],
+             "printf \"COMMAND\\t" ++ command ++ "\\n\" >> " ++ logFileName,
              "printf \"OUTPUT\\n\" >> " ++ logFileName,
-             format "( {0} ) 2>> {1}" [command, logFileName],
+             "( " ++ command ++ " ) 2>> " ++ logFileName,
              "EXIT_CODE=$?",
              "printf \"FINISHED\\t$(date)\\n\" >> " ++ logFileName,
              "printf \"EXIT CODE\\t$EXIT_CODE\\n\" >> " ++ logFileName]

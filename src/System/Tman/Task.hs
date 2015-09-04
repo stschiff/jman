@@ -1,4 +1,4 @@
-module TmanTask (task,
+module System.Tman.Task (task,
                  printTask,
                  inputFiles,
                  outputFiles,
@@ -8,7 +8,7 @@ module TmanTask (task,
                  submissionGroup,
                  Task) where
     
-import Task (Task(..), printTask)
+import System.Tman.Internal.Task (Task(..), printTask)
 import Prelude hiding (FilePath)
 import Filesystem.Path (FilePath)
 import Filesystem.Path.CurrentOS (encodeString)

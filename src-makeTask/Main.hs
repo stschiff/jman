@@ -1,7 +1,6 @@
 import qualified Options.Applicative as OP
-import Control.Error.Script (runScript, scriptIO)
-import Control.Monad.Trans.Either (hoistEither)
-import Task (Task(..), printTask)
+import Control.Error (runScript, scriptIO, tryRight)
+import System.Tman.Internal.Task (Task(..), printTask)
 import Control.Applicative (many)
 import Data.Monoid ((<>))
 
@@ -45,7 +44,7 @@ options = Options <$> OP.strArgument (OP.metavar "<NAME>" <>
 
 runWithOptions :: Options -> IO ()
 runWithOptions opts = runScript $ do
-    task <- hoistEither $ makeTask opts
+    task <- tryRight $ makeTask opts
     scriptIO . printTask $ task
 
 makeTask :: Options -> Either String Task

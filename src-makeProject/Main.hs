@@ -1,9 +1,8 @@
 import qualified Data.ByteString.Lazy.Char8 as B
 import Options.Applicative as OP
-import Control.Error.Script (runScript, scriptIO)
-import Control.Monad.Trans.Either (hoistEither)
-import Task (Task(..))
-import Project (Project(..))
+import Control.Error (runScript, scriptIO, tryRight)
+import System.Tman.Internal.Task (Task(..))
+import System.Tman.Internal.Project (Project(..))
 import Data.Aeson (encode, eitherDecode)
 
 data Options = Options {
@@ -26,7 +25,7 @@ runWithOptions :: Options -> IO ()
 runWithOptions (Options name logDir) = runScript $ do
     l <- scriptIO $ B.lines <$> B.getContents
     let tasks' = map eitherDecode l :: [Either String Task]
-    tasks <- hoistEither $ sequence tasks'
+    tasks <- tryRight $ sequence tasks'
     let proj = Project name logDir tasks
     scriptIO . B.putStrLn . encode $ proj
 

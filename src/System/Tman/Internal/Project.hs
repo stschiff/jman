@@ -1,13 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Project (Project(..), loadProject, checkUniqueJobNames) where
+module System.Tman.Internal.Project (Project(..), loadProject, checkUniqueJobNames) where
 
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object, eitherDecode)
-import Task (Task(..))
+import System.Tman.Internal.Task (Task(..))
 import Control.Monad (mzero)
-import Control.Error.Script (Script, scriptIO)
+import Control.Error (Script, scriptIO, tryRight)
 import qualified Data.ByteString.Lazy.Char8 as B
-import Control.Monad.Trans.Either (hoistEither)
 import Data.List (nub)
 
 data Project = Project {
@@ -28,7 +27,7 @@ loadProject :: FilePath -> Script Project
 loadProject projectFileName = do
     c <- scriptIO $ B.readFile projectFileName
     let eitherProject = eitherDecode c :: Either String Project
-    hoistEither eitherProject
+    tryRight eitherProject
 
 checkUniqueJobNames :: Project -> Bool
 checkUniqueJobNames project =

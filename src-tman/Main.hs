@@ -1,13 +1,11 @@
-import Task (Task(..), tSubmit, recursiveCheckAll, tInfo, tLSFInfo, tClean, tLog, tLsfLog, tLsfKill, 
+import System.Tman.Internal.Task (Task(..), tSubmit, recursiveCheckAll, tInfo, tLSFInfo, tClean, tLog, tLsfLog, tLsfKill, 
              SubmissionType(..), TaskStatus(..), TaskInfo(..), LSFInfo(..))
-import Project (Project(..), loadProject, checkUniqueJobNames)
-import Control.Error (runScript, Script, scriptIO, err, tryAssert)
+import System.Tman.Internal.Project (Project(..), loadProject, checkUniqueJobNames)
+import Control.Error (runScript, Script, scriptIO, err, tryAssert, tryRight, throwE)
 import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
 import qualified Data.Map as M
 import Data.List (intercalate, sortBy, groupBy, isInfixOf)
-import Control.Monad.Trans.Either (left, hoistEither)
-import Text.Format (format)
 import Data.List.Split (splitOn)
 import Control.Monad (forM_)
 import System.FilePath.GlobPattern ((~~))
@@ -79,7 +77,7 @@ runWithOptions (Options projectFileName cmdOpts) = runScript $ do
 
 runSubmit :: Project -> SubmitOpt -> Script ()
 runSubmit jobProject (SubmitOpt groupName force test submissionType unchecked) = do
-    tasks <- hoistEither $ selectTasks groupName jobProject
+    tasks <- tryRight $ selectTasks groupName jobProject
     let projectDir = _prLogDir jobProject
     status <- if unchecked then return $ repeat StatusIncomplete else recursiveCheckAll False tasks
     info <- if unchecked then return $ repeat InfoNoLogFile else mapM (tInfo projectDir False) tasks
@@ -87,34 +85,32 @@ runSubmit jobProject (SubmitOpt groupName force test submissionType unchecked) =
         "lsf" -> return LSFsubmission
         "standard" -> return StandardSubmission
         "seq" -> return SequentialSubmission
-        _ -> left "unknown submission type"
+        _ -> throwE "unknown submission type"
     forM_ (zip3 tasks status info) $ \(t, s, i) -> do
         if i == InfoNotFinished then do
-            let msg = format "Job {0}: already running? skipping. Use --clean to reset" [_tName t]
+            let msg = "Job " ++ _tName t ++ ": already running? skipping. Use --clean to reset"
             scriptIO . hPutStrLn stderr $ msg
         else
             case s of
-                StatusMissingInput -> scriptIO . hPutStrLn stderr $ format "Job {0}: missing input, skipping" [_tName t] 
-                StatusOutdatedR -> scriptIO . hPutStrLn stderr $ format "Job {0}: outdated input, skipping" [_tName t] 
+                StatusMissingInput -> scriptIO . hPutStrLn stderr $ "Job " ++ _tName t ++ ": missing input, skipping"
+                StatusOutdatedR -> scriptIO . hPutStrLn stderr $ "Job " ++ _tName t ++ ": outdated input, skipping"
                 StatusComplete -> if force then
                         tSubmit projectDir test submissionType t
                     else do
-                        let msg = format "Job {0}: already complete, skipping (use --force to submit anyway)"
-                                         [_tName t] 
+                        let msg = "Job " ++ _tName t ++ ": already complete, skipping (use --force to submit anyway)"
                         scriptIO . hPutStrLn stderr $ msg
                 _ -> tSubmit projectDir test submissionType t
         
 
 runList :: Project -> ListOpt -> Script ()
 runList jobProject opts = do
-    tasks <- hoistEither $ selectTasks (_liGroupName opts) jobProject
+    tasks <- tryRight $ selectTasks (_liGroupName opts) jobProject
     let summaryLevel = _liSummary opts
     if summaryLevel > 0 then do
         let groups = map (intercalate "/" . take summaryLevel . splitOn "/" . _tName) tasks
             entries = sortBy (\(e1, _) (e2, _) -> e1 `compare` e2) . M.toList .
                       foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $ groups
-        scriptIO . mapM_ putStrLn $ [format "Group {0}: {1} {2}" [g, show num, if num == 1 then "job" else "jobs"]
-                                     | (g, num) <- entries]
+        scriptIO . mapM_ putStrLn $ ["Group " ++ g ++ ": " ++ show num ++ " " ++ if num == 1 then "job" else "jobs" | (g, num) <- entries]
     else do
         let indices = if (_liFull opts) then [0..6] else [0..4]
             headers = ["NAME", "MEMORY", "THREADS", "SUBMISSION-QUEUE", "SUBMISSION-GROUP", 
@@ -129,12 +125,12 @@ runList jobProject opts = do
 
 runPrint :: Project -> PrintOpt -> Script ()
 runPrint jobProject opts = do
-    tasks <- hoistEither $ selectTasks (_prGroupName opts) jobProject
+    tasks <- tryRight $ selectTasks (_prGroupName opts) jobProject
     scriptIO (mapM_ putStrLn . map _tCommand $ tasks)
 
 runStatus :: Project -> StatusOpt -> Script ()
 runStatus jobProject opts = do
-    tasks <- hoistEither $ selectTasks (_stGroupName opts) jobProject
+    tasks <- tryRight $ selectTasks (_stGroupName opts) jobProject
     let verbose = _stVerbose opts
     fullStatusList <- do 
         let allTasks = _prTasks jobProject
@@ -159,11 +155,9 @@ runStatus jobProject opts = do
                       groupBy (\((e1, _), _) ((e2, _), _) -> e1 == e2) .
                       sortBy (\((e1, _), _) ((e2, _), _) -> e1 `compare` e2) . M.toList $ dict
         scriptIO . mapM_ putStrLn $ 
-            ["Group " ++ g ++ ": " ++ intercalate ", " [format "{0}({1})" [showFullStatus s, show c] | (s, c) <- l] |
-             (g, l) <- entries]
+            ["Group " ++ g ++ ": " ++ intercalate ", " [showFullStatus s ++ "(" ++ show c ++ ")" | (s, c) <- l] | (g, l) <- entries]
     else do
-        let l = map (\(t, l) -> format "Job {0}: {1}" [_tName t, showFullStatus l]) . filter pred_ $
-                zip tasks fullStatusList
+        let l = map (\(t, l) -> "Job " ++ _tName t ++ ": " ++ showFullStatus l) . filter pred_ $ zip tasks fullStatusList
         scriptIO $ mapM_ putStrLn l
   where
     pred_ = if _stSkipSuccessful opts then
@@ -191,28 +185,28 @@ selectTasks group jobProject =
 
 runClean :: Project -> CleanOpt -> Script ()
 runClean jobProject (CleanOpt groupName) = do
-    tasks <- hoistEither $ selectTasks groupName jobProject
+    tasks <- tryRight $ selectTasks groupName jobProject
     infos <- mapM (tInfo (_prLogDir jobProject) False) tasks
     forM_ (zip tasks infos) $ \(task, info) -> do
         if info == InfoNotFinished then
             tClean (_prLogDir jobProject) task
         else
-            scriptIO . hPutStrLn stderr $ format "skipping task {0}" [_tName task]
+            scriptIO . hPutStrLn stderr $ "skipping task " ++ _tName task
 
 runLog :: Project -> LogOpt -> Script ()
 runLog jobProject (LogOpt groupName lsf) = do
-    tasks <- hoistEither $ selectTasks groupName jobProject
+    tasks <- tryRight $ selectTasks groupName jobProject
     mapM_ (logFunc $ _prLogDir jobProject) tasks
   where
     logFunc = if lsf then tLsfLog else tLog
 
 runKill :: Project -> KillOpt -> Script ()
 runKill jobProject (KillOpt groupName lsf) = do
-    tasks <- hoistEither $ selectTasks groupName jobProject
+    tasks <- tryRight $ selectTasks groupName jobProject
     if lsf then
         mapM_ tLsfKill tasks
     else
-        left "killing non-LSF jobs not yet implemented"
+        throwE "killing non-LSF jobs not yet implemented"
 
 options :: OP.Parser Options
 options = Options <$> parseProjectFileName <*> parseCommand
