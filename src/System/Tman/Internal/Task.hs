@@ -2,267 +2,250 @@
 
 module System.Tman.Internal.Task (
     Task(..),
+    TaskSpec(..),
     TaskStatus(..),
-    TaskInfo(..),
-    LSFInfo(..),
+    TaskRunInfo(..),
+    FailedReason(..),
+    RunInfo(..)
+    SubmissionSpec(..),
     tSubmit,
-    recursiveCheckAll,
-    tInfo,
-    tLSFInfo,
+    tStatus,
+    tRunInfo,
     tClean,
     tLog,
-    tLsfLog,
-    tLsfKill,
-    makedirs,
-    SubmissionType(..),
     printTask
 ) where
 
-import System.Directory (doesFileExist, getModificationTime, removeFile, createDirectoryIfMissing)
-import System.Posix.Files (getFileStatus, fileSize, touchFile)
-import System.FilePath.Posix ((</>), (<.>), takeDirectory)
-import System.Process (callProcess, spawnProcess, readProcess)
+import Turtle.Prelude (testfile, datefile, rm, mktree, proc, empty, du)
+import Turtle (UTCTime)
+import Turtle.Format (format, fp, d)
+import Filesystem.Path ((</>), (<.>), directory, FilePath)
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+import Prelude hiding FilePath
 import System.IO (stderr, hPutStrLn, openFile, IOMode(..), hClose)
-import Control.Error (Script, scriptIO, tryAssert, err)
+import Control.Error (Script, scriptIO, tryAssert, err, throwE)
 import Control.Monad (when, filterM, mzero)
-import Data.List (intercalate, isInfixOf)
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=), encode)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 
-data Task = Task {
-    _tName :: String,
+data TaskSpec = TaskSpec {
+    _tName :: FilePath,
+    _tInputTasks :: [FilePath],
     _tInputFiles :: [FilePath],
     _tOutputFiles :: [FilePath],
-    _tCommand :: String,
+    _tCommand :: T.Text,
     _tMem :: Int,
     _tNrThreads :: Int,
-    _tSubmissionQueue :: String,
-    _tSubmissionGroup :: String
+    _tHours :: Int
 } deriving Show
 
-
-instance FromJSON Task where
-    parseJSON (Object v) = Task <$>
+instance FromJSON TaskSpec where
+    parseJSON (Object v) = TaskSpec <$>
                            v .: "name" <*>
+                           v .: "inputTasks"
                            v .: "inputFiles" <*>
                            v .: "outputFiles" <*>
                            v .: "command" <*>
                            v .: "mem" <*>
                            v .: "nrThreads" <*>
-                           v .: "submissionQueue" <*>
-                           v .: "submissionGroup"
+                           v .: "hours"
     parseJSON _         = mzero
 
-instance ToJSON Task where
-    toJSON (Task n i o c m t q g) =
+instance ToJSON TaskSpec where
+    toJSON (Task n it ifiles o c m t h) =
         object ["name" .= n,
-                "inputFiles" .= i,
+                "inputTasks" .= it
+                "inputFiles" .= ifiles,
                 "outputFiles" .= o,
                 "command" .= c,
                 "mem" .= m,
                 "nrThreads" .= t,
-                "submissionQueue" .= q,
-                "submissionGroup" .= g]
+                "hours" .= h]
+
+data Task = Task {
+    _tName :: FilePath,
+    _tInputTasks :: [Task],
+    _tInputFiles :: [FilePath],
+    _tOutputFiles :: [FilePath],
+    _tCommand :: T.Text,
+    _tMem :: Int,
+    _tNrThreads :: Int,
+    _tHours :: Int
+} deriving Show
+
+printTask :: Task -> IO ()
+printTask task = B.putStrLn . encode $ task
 
 logFileName :: FilePath -> Task -> FilePath
 logFileName projectDir task = projectDir </> _tName task <.> "log"
 
-data TaskStatus = StatusMissingInput
-                | StatusIncomplete
+data TaskStatus = StatusIncompleteInputTask T.Text
+                | StatusMissingInputFile T.Text
+                | StatusIncomplete T.Text
                 | StatusOutdated
-                | StatusOutdatedR
                 | StatusComplete deriving (Eq, Ord, Show)
 
-data TaskInfo = InfoNoLogFile
-              | InfoNotFinished
-              | InfoFailed
-              | InfoSuccess deriving (Eq, Ord, Show)
+data TaskRunInfo = InfoNoLogFile
+                 | InfoNotFinished
+                 | InfoFailed FailedReason
+                 | InfoSuccess RunInfo deriving (Eq, Ord, Show)
 
-data LSFInfo = LSFInfoNoLogFile
-              | LSFInfoNotFinished
-              | LSFInfoMemFailed
-              | LSFInfoRuntimeFailed
-              | LSFInfoUnknownFailed
-              | LSFInfoSuccess deriving (Eq, Ord, Show)
+data FailedReason = FailedMem | FailedRuntime | FailedUnknown deriving (Eq, Ord, Show)
 
-data SubmissionType = StandardSubmission | LSFsubmission | SequentialSubmission
+data RunInfo = RunInfo {
+    _runInfoBegin :: UTCTime,
+    _runInfoEnd :: UTCTime,
+    _runInfoMaxMem :: Double
+}
 
-tSubmit :: FilePath -> Bool -> SubmissionType -> Task -> Script ()
-tSubmit projectDir test submissionType task = do
+data SubmissionSpec = SequentialExecutionSubmission
+                    | GnuParallelSubmission Int -- Number of jobs to be run parallel
+                    | LSFsubmission T.Text T.Text -- group, queue
+
+tSubmit :: FilePath -> Bool -> SubmissionSpec -> Task -> Script ()
+tSubmit projectDir test submissionSpec task = do
     let jobFileName = projectDir </> _tName task <.> "job.sh"
         logFile = logFileName projectDir task
-    scriptIO . makedirs . takeDirectory $ jobFileName
+    mktree . directory $ jobFileName
     writeJobScript jobFileName logFile (_tCommand task)
-    case submissionType of
-        LSFsubmission -> do
-            let memStr = show $ _tMem task
-            let rArg = "select[mem>" ++ memStr ++ "] rusage[mem=" ++ memStr ++ "] span[hosts=1]"
-                cmd = ["bash", jobFileName]
-                l = projectDir </> (_tName task) <.> "bsub.log"
-                lsf_args = ["-J", _tName task, "-q", _tSubmissionQueue task, "-R", rArg, "-M", show $ _tMem task,
-                        "-n", show $ _tNrThreads task, "-oo", l]
-                group_args = if null $ _tSubmissionGroup task then [] else ["-G", _tSubmissionGroup task]
+    case submissionSpec of
+        LSFsubmission group queue -> do
+            let m = _tMem task
+                rArg = format ("select[mem>"%d%"] rusage[mem="%d%"] span[hosts=1]") m m
+                cmd = ["bash", format fp jobFileName]
+                lsf_args = ["-J", format fp $ _tName task, "-q", queue, "-R", rArg, "-M", format d $ _tMem task,
+                        "-n", format d $ _tNrThreads task, "-oo", format fp $ logFileName projectDir task]
+                group_args = ["-G", _tSubmissionGroup task]
                 args = lsf_args ++ group_args ++ cmd
             if test then
-                scriptIO $ putStrLn (intercalate " " $ wrapCmdArgs ("bsub":args))
+                scriptIO $ T.putStrLn (T.intercalate " " $ wrapCmdArgs ("bsub":args))
             else do
-                scriptIO . touch $ logFile
-                scriptIO $ callProcess "bsub" args
-        StandardSubmission -> do
-            if test then
-                scriptIO $ putStrLn ("bash " ++ jobFileName)
-            else do
-                scriptIO . touch $ logFile
-                _ <- scriptIO $ spawnProcess "bash" [jobFileName]
-                scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
-        SequentialSubmission -> do
-            if test then
-                scriptIO $ putStrLn ("bash " ++ jobFileName)
-            else do
-                scriptIO . touch $ logFile
-                _ <- scriptIO $ callProcess "bash" [jobFileName]
-                scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
+                touch $ logFile
+                exitCode <- proc "bsub" args empty
+                case exitCode of
+                    ExitFailure i -> throwE ("bsub command failed with exit code " ++ show i)
+                    _ -> return ()
+        SequentialExecutionSubmission -> throwE "sequential execution not yet implemented"
+            -- if test then
+            --     scriptIO $ putStrLn ("bash " ++ jobFileName)
+            -- else do
+            --     scriptIO . touch $ logFile
+            --     _ <- scriptIO $ spawnProcess "bash" [jobFileName]
+            --     scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
+        GnuParallelSubmission -> throwE "Gnu Parallel not yet implemented"
   where
-    wrapCmdArgs args = [if ' ' `elem` a then "\"" ++ a ++ "\"" else a | a <- args]
-    touch path = do
-        ex <- doesFileExist path
-        if ex then touchFile path else writeFile path ""
+    wrapCmdArgs args = [if " " `T.isInfixOf` a then T.cons '\"' . T.snoc '\"' $ a else a | a <- args]
             
-
-makedirs :: FilePath -> IO ()
-makedirs = createDirectoryIfMissing True
-
-writeJobScript :: FilePath -> FilePath -> String -> Script ()
-writeJobScript jobFileName logFileName command = do
-    jobFile <- scriptIO $ openFile jobFileName WriteMode
-    let l = ["printf \"STARTING\\t$(date)\\n\" > " ++ logFileName,
-             "printf \"COMMAND\\t" ++ command ++ "\\n\" >> " ++ logFileName,
-             "printf \"OUTPUT\\n\" >> " ++ logFileName,
-             "( " ++ command ++ " ) 2>> " ++ logFileName,
-             "EXIT_CODE=$?",
-             "printf \"FINISHED\\t$(date)\\n\" >> " ++ logFileName,
-             "printf \"EXIT CODE\\t$EXIT_CODE\\n\" >> " ++ logFileName]
-    scriptIO $ mapM_ (hPutStrLn jobFile) l
-    scriptIO $ hClose jobFile
+writeJobScript :: SubmissionSpec -> FilePath -> Text -> Script ()
+writeJobScript submissionSpec jobFileName command = do
+    let submissionName = case submissionSpec of
+            LSFsubmission -> "LSF"
+            SequentialExecutionSubmission -> "Sequential"
+            GnuParallelSubmission -> "GNUparallel"
+    let c = format ("printf \"SUBMISSION\\t"%s%"\n"%s) submissionName command
+    scriptIO $ T.writeFile jobFileName c
     
-tCheck :: Bool -> Task -> Script TaskStatus
-tCheck verbose task = do
-    iExisting <- scriptIO (mapM doesFileExist $ _tInputFiles task)
-    when verbose $ scriptIO . err $ "checking task " ++ _tName task ++ "\n"
-    iFileStatus <- scriptIO $ filterM doesFileExist (_tInputFiles task) >>= mapM getFileStatus
-    if (not $ and iExisting) || or (map ((==0) . fileSize) iFileStatus) then
-        return StatusMissingInput
+tStatus :: Bool -> Task -> Script TaskStatus
+tStatus verbose task = do
+    inputTaskStatus <- mapM (tStatus verbose) $ _tInputTasks task
+    if any (/=StatusComplete) inputTaskStatus then
+        return . StatusIncompleteInputTask . T.intercalate "," $ [format fp $ _tName t | t, s <- zip (_tInputTasks task) inputTaskStatus,
+                                                                                         s /= StatusComplete]
     else do
-        oExisting <- scriptIO (mapM doesFileExist $ _tOutputFiles task)
-        oFileStatus <- scriptIO (filterM doesFileExist (_tOutputFiles task) >>= mapM getFileStatus)
-        if (not $ and oExisting) || or (map ((==0) . fileSize) oFileStatus) then
-            return StatusIncomplete
+        iFileSize <- mapM getFileSize $ _tInputFiles task
+        when verbose $ err $ format ("checking task "%fp%"\n") (_tName task)
+        if any (==0) iFileSize then
+            return . StatusMissingInputFile . T.intercalate "," $ [format fp f | f, s <- zip (_tInputFiles task) iFileSize, s == 0]
         else do
-            inputMod <- scriptIO (mapM getModificationTime $ _tInputFiles task)
-            outputMod <- scriptIO (mapM getModificationTime $ _tOutputFiles task)
-            if null inputMod || maximum inputMod <= minimum outputMod then
-                return StatusComplete
-            else
-                return StatusOutdated
-
-recursiveCheckAll :: Bool -> [Task] -> Script [TaskStatus]
-recursiveCheckAll verbose tasks = do
-    let outputFileTable = concatMap (\t -> [(f, t) | f <- _tOutputFiles t]) tasks
-        fileTaskLookup = M.fromList outputFileTable
-    tryAssert "Error: multiple tasks have same output file" $ M.size fileTaskLookup == length outputFileTable
-    taskStatusLookup <- M.fromList . map (\(t, s) -> (_tName t, s)) . zip tasks <$> mapM (tCheck verbose) tasks
-    return $ map (recursiveCheck fileTaskLookup taskStatusLookup) tasks
-
-recursiveCheck :: M.Map FilePath Task -> M.Map String TaskStatus -> Task -> TaskStatus
-recursiveCheck fileTaskLookup taskStatusLookup task =
-    if rawStatus == StatusMissingInput then
-        rawStatus
-    else
-        if any (/= StatusComplete) allInputStatus then
-            StatusOutdatedR
-        else
-            rawStatus
+            oFileSize <- mapM getFileSize $ _tOutputFiles task
+            if any (==0) oFileSize then
+                return . StatusIncomplete . T.intercalate "," $ [format fp f | f, s <- zip (_tOutputFiles task) oFileSize, s == 0]
+            else do
+                inputMod <- mapM datefile $ allInputFiles task
+                outputMod <- mapM datefile $ _tOutputFiles task
+                if null inputMod || maximum inputMod <= minimum outputMod then
+                    return StatusComplete
+                else
+                    return StatusOutdated
   where
-    rawStatus = taskStatusLookup M.! (_tName task)
-    allInputStatus = map (recursiveCheck fileTaskLookup taskStatusLookup) allInputTasks
-    allInputTasks = catMaybes . map (\f -> M.lookup f fileTaskLookup) . _tInputFiles $ task
-            
+    getFileSize f =
+        iExists <- testFile f
+        if iExists then do
+            fs <- du f
+            return $ bytes fs
+        else
+            return 0
+    allInputFiles t = (concatMap _tOutputFiles $ _tInputTasks t) ++ _tInputFiles t
 
-tInfo :: FilePath -> Bool -> Task -> Script TaskInfo
-tInfo projectDir verbose task = do
-    when verbose $ scriptIO . err $ "checking task " ++ _tName task ++ "\n"
-    logFileExists <- scriptIO $ doesFileExist (logFileName projectDir task)
+tRunInfo :: FilePath -> Bool -> Task -> Script TaskRunInfo
+tRunInfo projectDir verbose task = do
+    logFormat <- autodetectLogFormat projectDir task
+    case logFormat of
+        "LSF" -> tLSFrunInfo projectDir verbose task
+        "Sequential" -> throwE "Sequential Log Format not implemented yet"
+        "GNUparallel" -> throwE "Gnu Parallel Log Format not implemented yet"
+        _ -> throwE "unknown format in log file"
+
+autodetectLogFormat :: FilePath -> Task -> Script Text
+autodetectLogFormat = undefined
+
+tLSFrunInfo :: FilePath -> Bool -> Task -> Script TaskRunInfo
+tLSFrunInfo projectDir verbose task = do
+    when verbose $ err $ format ("getting LSF run info for task "%fp%"\n") (_tName task)
+    logFileExists <- scriptIO . testFile $ logFileName task
     if not logFileExists then
         return InfoNoLogFile
     else do
-        l <- scriptIO $ B.lines `fmap` B.readFile (logFileName projectDir task)
-        if null l then return InfoFailed else do
-            let w = B.split '\t' . last $ l
-            if head w /= "EXIT CODE" then
-                return InfoNotFinished
+        c <- scriptIO $ T.readFile logFileName task
+        let (_, infoPart) = T.breakOn "Sender: LSF System" c
+        if null infoPart then return InfoNotFinished else
+            if "Successfully completed." `T.isInfixOf` infoPart then
+                parseLSFrunInfo infoPart >>= return . InfoSuccess
             else
-                if last w == "0" then do
-                    return InfoSuccess
-                else
-                    return InfoFailed
+                if "TERM_MEMLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedMem else
+                    if "TERM_RUNLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedRuntime else
+                        return $ InfoFailed FailedUnknown
+            else return InfoNotFinished
 
-tLSFInfo :: FilePath -> Bool -> Task -> Script LSFInfo
-tLSFInfo projectDir verbose task = do
-    when verbose $ scriptIO . err $ "checking task " ++ _tName task ++ "\n"
-    let lf = projectDir </> (_tName task) <.> "bsub.log"
-    logFileExists <- scriptIO . doesFileExist $ lf
-    if not logFileExists then
-        return LSFInfoNoLogFile
-    else do
-        c <- scriptIO $ readProcess "tail" ["-100", lf] ""
-        if null c then return LSFInfoNotFinished else
-            if "Resource usage summary:" `isInfixOf` c then
-                if "Successfully completed." `isInfixOf` c then return LSFInfoSuccess else
-                    if "TERM_MEMLIMIT" `isInfixOf` c then return LSFInfoMemFailed else
-                        if "TERM_RUNLIMIT" `isInfixOf` c then return LSFInfoRuntimeFailed else
-                            return LSFInfoUnknownFailed
-            else return LSFInfoNotFinished
+parseLSFrunInfo :: Text -> Script RunInfo
+parseLSFrunInfo content = do
+    let l = T.lines content
+    beginLine <- tryHead "cannot find starting time in LSF log output" . filter (T.isPrefix of "Started at ") $ l
+    endLine <- tryHead "cannot find end time in LSF log output" . filter (T.isPrefix of "Results reported at ") $ l
+    let beginTimeStr = T.drop (length "Started at ") beginLine
+        endTimeStr = T.drop (length "Results reported at ") endLine
+    maxMemLine <- tryHead "cannot find maximum memory in LSF log output" . filter (T.isPrefix of "    Max Memory :             ") $ l
+    maxMemStr <- tryHead "cannot read maximum memory in LSF log output" . words . T.drop (length "    Max Memory :             ") $ 
+                    maxMemLine
+    maxMem <- tryRead "cannot read maximum memory in LSF log output" maxMemStr
+    beginTime <- tryJust "could not parse start time" $ parseTimeM False defaultTimeLocale "%a %b %d %T %Y" beginTimeStr
+    endTime <- tryJust "could not parse end time" $ parseTimeM False defaultTimeLocale "%a %b %d %T %Y" endTimeStr
+    return $ RunInfo beginTime endTime maxMem
 
 tClean :: FilePath -> Task -> Script ()
 tClean projectDir task = do
-    scriptIO . removeFileIfExists $ logFileName projectDir task
-    scriptIO . removeFileIfExists $ projectDir </> (_tName task) <.> "bsub.log"
+    let jobFileName = projectDir </> _tName task <.> "job.sh"
+        logFile = logFileName projectDir task
+    rm' jobFileName
+    rm' logFileName
   where
-    removeFileIfExists f = do
-        exists <- doesFileExist f
-        when exists $ removeFile f
+    rm' f = testFile f >>= when $ rm f
 
 tLog :: FilePath -> Task -> Script ()
 tLog projectDir task = scriptIO $ do
-    ex <- doesFileExist fn
-    putStrLn $ "Task: " ++ _tName task
-    if not ex then
-        putStrLn "Log file doesn't exist"
-    else
-        readFile fn >>= putStr
-    putStrLn ""
+    testFile fn >>= assertTry "Log file doesn't exist"
+    stdout . input $ fn
+    scriptIO $ putStrLn ""
   where
     fn = logFileName projectDir task
 
-tLsfLog :: FilePath -> Task -> Script ()
-tLsfLog projectDir task = scriptIO $ do
-    ex <- doesFileExist fn
-    putStrLn $ "Task: " ++ _tName task
-    if not ex then
-        putStrLn "Lsf Log file doesn't exist"
-    else
-        readFile fn >>= putStr
-    putStrLn ""
-  where
-    fn = projectDir </> (_tName task) <.> "bsub.log"
-    
-
-tLsfKill :: Task -> Script ()
-tLsfKill task = do
-    _ <- scriptIO $ spawnProcess "bkill" ["-J", _tName task]
-    return ()
-
-printTask :: Task -> IO ()
-printTask task = B.putStrLn . encode $ task
+-- tLsfKill :: Task -> Script ()
+-- tLsfKill task = do
+--     exitCode <- proc "bsub" ["-J", format fp $ _tName task] empty
+--     case exitCode of
+--         ExitFailure i -> throwE ("bkill command failed with exit code " ++ show i)
+--         _ -> return ()
+--     return ()
