@@ -1,18 +1,18 @@
 {-# LANGUAGE OverloadedStrings #-}
-import System.Tman.Internal.Task (Task(..), tSubmit, tRunInfo, tStatus, tClean, tLog, tLsfKill, SubmissionSpec(..), TaskStatus(..), 
-                                  TaskRunInfo(..), RunInfo(..), FailedReason(..))
-import System.Tman.Internal.Project (Project(..), loadProject, checkUniqueJobNames)
-import Control.Error (runScript, Script, scriptIO, tryAssert, tryRight, throwE)
+import Tman.Internal.Task (Task(..), tSubmit, tRunInfo, tStatus, tClean, tLog, SubmissionSpec(..), TaskStatus(..), TaskRunInfo(..))
+import Tman.Internal.Project (Project(..), loadProject)
+import Control.Error (runScript, Script, scriptIO, tryRight, throwE)
 import Turtle.Prelude (err)
-import Turtle.Format (format, s, d, fp)
+import Filesystem.Path.CurrentOS (encodeString)
+import Turtle (FilePath, fromText)
+import Prelude hiding (FilePath)
+import Turtle.Format (format, s, d, fp, (%), w)
 import qualified Options.Applicative as OP
 import Data.Monoid ((<>))
 import qualified Data.Map as M
-import Data.List (intercalate, sortBy, groupBy, isInfixOf)
-import Data.List.Split (splitOn)
+import Data.List (sortBy, groupBy)
 import Control.Monad (forM_)
 import System.FilePath.GlobPattern ((~~))
-import System.IO (stderr, hPutStrLn)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
@@ -31,7 +31,7 @@ data SubmitOpt = SubmitOpt {
     _suSubmissionType :: String,
     _suQueue :: String,
     _suGroup :: String,
-    _suChunkSize :: String,
+    _suChunkSize :: Int,
     _suUnchecked :: Bool
 }
 
@@ -68,9 +68,8 @@ main = OP.execParser optParser >>= runWithOptions
 
 runWithOptions :: Options -> IO ()
 runWithOptions (Options projectFileName cmdOpts) = runScript $ do
-    scriptIO . err $ "loading project file " ++ projectFileName ++ "\n"
+    scriptIO . err $ format ("loading project file "%fp) projectFileName
     jobProject <- loadProject projectFileName
-    tryAssert "job names must be unique" $ checkUniqueJobNames jobProject
     case cmdOpts of
         CmdSubmit opts -> runSubmit jobProject opts
         CmdList opts -> runList jobProject opts
@@ -80,30 +79,44 @@ runWithOptions (Options projectFileName cmdOpts) = runScript $ do
         CmdLog opts -> runLog jobProject opts
 
 runSubmit :: Project -> SubmitOpt -> Script ()
-runSubmit jobProject (SubmitOpt groupName force test submissionType queue group chunkSize unchecked) = do
+runSubmit jobProject
+          (SubmitOpt groupName force test submissionType queue group chunkSize unchecked) = do
     tasks <- tryRight $ selectTasks groupName jobProject
     let projectDir = _prLogDir jobProject
-    status <- if unchecked then return $ repeat StatusIncomplete "" else mapM (tStatus False) tasks
-    info <- if unchecked then return $ repeat InfoNoLogFile else mapM (tRunInfo projectDir False) tasks
-    submissionSpec <- case submissionType of
-        "lsf" -> return LSFsubmission queue group
-        "seq" -> return SequentialExecutionSubmission
-        "par" -> return GnuParallelSubmission chunkSize
-        _ -> throwE "unknown submission type"
-    forM_ (zip3 tasks status info) $ \(t, s, i) -> do
-        if i == InfoNotFinished then
-            err $ format ("Job "%s": already running? skipping. Use --clean to reset") (_tName t)
+    status <- if unchecked then
+            return . repeat $ StatusIncomplete ""
         else
-            case s of
-                StatusIncompleteInputTask msg -> err $ format ("Job "%s%": incomplete input task(s): "%s) (_tName t) msg
-                StatusMissingInputFile msg -> err $ format ("Job "%s%": missing input file(s): "%s) (_tName t) msg
-                StatusOutdated -> err $ format ("Job "%s%": outdated input, skipping") (_tName t)
+            mapM (tStatus False) tasks
+    info <- if unchecked then
+            return $ repeat InfoNoLogFile
+        else
+            mapM (tRunInfo projectDir False) tasks
+    submissionSpec <- case submissionType of
+        "lsf" -> return $ LSFsubmission (T.pack queue) (T.pack group)
+        "seq" -> return SequentialExecutionSubmission
+        "par" -> return $ GnuParallelSubmission chunkSize
+        _ -> throwE "unknown submission type"
+    forM_ (zip3 tasks status info) $ \(t, st, i) ->
+        if i == InfoNotFinished then
+            throwE . T.unpack $ format ("Job "%fp%": already running? skipping. Use --clean to "%
+                                        "reset") (_tName t)
+        else
+            case st of
+                StatusIncompleteInputTask msg ->
+                    throwE' $ format ("Job "%fp%": incomplete input task(s): "%s) (_tName t) msg
+                StatusMissingInputFile msg ->
+                    throwE' $ format ("Job "%fp%": missing input file(s): "%s) (_tName t) msg
+                StatusOutdated -> throwE' $ format ("Job "%fp%": outdated input, skipping") (_tName t)
                 StatusComplete -> if force then
-                        tSubmit projectDir test submissionType t
+                        tSubmit projectDir test submissionSpec t
                     else
-                        err $ format ("Job "%s%": already complete, skipping (use --force to submit anyway)") (_tName t)
-                _ -> tSubmit projectDir test submissionType t
-        
+                        throwE' $ format ("Job "%fp%": already complete, skipping (use --force to "%
+                                          "submit anyway)") (_tName t)
+                _ -> tSubmit projectDir test submissionSpec t
+
+throwE' :: T.Text -> Script ()
+throwE' = throwE . T.unpack
+
 runList :: Project -> ListOpt -> Script ()
 runList jobProject opts = do
     tasks <- tryRight $ selectTasks (_liGroupName opts) jobProject
@@ -120,7 +133,8 @@ runList jobProject opts = do
         scriptIO . T.putStrLn . T.intercalate "\t" . map (headers!!) $ indices
         scriptIO . mapM_ T.putStrLn . map (tMeta indices) $ tasks
   where
-    tMeta indices (Task n it ifiles o _ m t h) = format (fp%"\t"%w%"\t"%w%"\t"%w%"\t"%d%"\t"%d%"\t"%d) n it ifiles o m t h
+    tMeta _ (Task n it ifiles o _ m t h) =
+        format (fp%"\t"%w%"\t"%w%"\t"%w%"\t"%d%"\t"%d%"\t"%d) n it ifiles o m t h
         
 runPrint :: Project -> PrintOpt -> Script ()
 runPrint jobProject opts = do
@@ -132,7 +146,7 @@ runStatus jobProject opts = do
     tasks <- tryRight $ selectTasks (_stGroupName opts) jobProject
     let verbose = _stVerbose opts
     fullStatusList <- do 
-        status <- mapM (tStatus verbose) allTasks
+        status <- mapM (tStatus verbose) tasks
         info <- if _stInfo opts then
                     mapM (fmap Just . tRunInfo (_prLogDir jobProject) verbose) tasks
                 else
@@ -140,25 +154,37 @@ runStatus jobProject opts = do
         return $ zip status info
     let summaryLevel = _stSummary opts
     if summaryLevel > 0 then do
-        let groups = map (T.intercalate "/" . take summaryLevel . T.splitOn "/" . format fp . _tName) tasks
-            dict :: M.Map (String, (TaskStatus, Maybe TaskInfo, Maybe LSFInfo)) Int
+        let groups = map (T.intercalate "/" . take summaryLevel . T.splitOn "/" . format fp . _tName) 
+                         tasks
+
+            dict :: M.Map (T.Text, (TaskStatus, Maybe TaskRunInfo)) Int
             dict = foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $ zip groups fullStatusList
-            entries = map (\subList -> (fst . fst . head $ subList, [(s, c) | ((_, s), c) <- subList])) .
-                      groupBy (\((e1, _), _) ((e2, _), _) -> e1 == e2) .
-                      sortBy (\((e1, _), _) ((e2, _), _) -> e1 `compare` e2) . M.toList $ dict
+
+            entries :: [(T.Text, [((TaskStatus, Maybe TaskRunInfo), Int)])]
+            entries = map (\subList ->
+                           (fst . fst . head $ subList, [(st, c) | ((_, st), c) <- subList])) .
+                          groupBy (\((e1, _), _) ((e2, _), _) -> e1 == e2) .
+                          sortBy (\((e1, _), _) ((e2, _), _) -> e1 `compare` e2) . M.toList $ dict
+
         scriptIO . mapM_ T.putStrLn $ 
-            ["Group " ++ g ++ ": " ++ intercalate ", " [showFullStatus s ++ "(" ++ show c ++ ")" | (s, c) <- l] | (g, l) <- entries]
-            [format ("Group "%s%": "%s) g $ intercalate ", " [format (s%"("%w%")") (showFullStatus s) c| (s, c) <- l] |
+            [format ("Group "%s%": "%s) g $
+             T.intercalate ", " [format (s%"("%w%")") (showFullStatus st) c | (st, c) <- l] |
              (g, l) <- entries]
     else do
-        let l = map (\(t, l) -> format ("Job "%s%": "%s) (_tName t) (showFullStatus l)) . filter pred_ $ zip tasks fullStatusList
-        scriptIO $ mapM_ T.putStrLn l
+        let ll = map (\(t, l) -> format ("Job "%fp%": "%s) (_tName t) (showFullStatus l)) $
+                 filter pred_ $ zip tasks fullStatusList
+        scriptIO $ mapM_ T.putStrLn ll
   where
     pred_ = if _stSkipSuccessful opts then
-                (\(_, (s, i, l)) -> s /= StatusComplete || (i /= Nothing && i /= Just (InfoSuccess _) && i /= Just InfoNoLogFile))
+                (\(_, (st, i)) ->
+                    case (st, i) of
+                        (StatusComplete, Nothing) -> False
+                        (StatusComplete, Just (InfoSuccess _)) -> False
+                        (StatusComplete, Just (InfoNoLogFile)) -> False
+                        _ -> True)
             else
                 const True
-    showFullStatus (s, i) = format (w%s) s (show' i)
+    showFullStatus (st, i) = format (w%s) st (show' i)
     show' (Just i) = format ("+"%w) i
     show' Nothing = ""
 
@@ -168,7 +194,7 @@ selectTasks group jobProject =
             (_prTasks jobProject)
         else
             -- filter (startswith groupParts . splitOn "/" . _tName) $ _prTasks jobProject
-            filter ((~~ group) . T.unpack . _tName) . _prTasks $ jobProject
+            filter ((~~ group) . encodeString . _tName) . _prTasks $ jobProject
      in  if null ret then Left "No Tasks found" else Right ret
   -- where
   --   groupParts = splitOn "/" group
@@ -176,24 +202,26 @@ selectTasks group jobProject =
 runClean :: Project -> CleanOpt -> Script ()
 runClean jobProject (CleanOpt groupName) = do
     tasks <- tryRight $ selectTasks groupName jobProject
-    infos <- mapM (tInfo (_prLogDir jobProject) False) tasks
+    infos <- mapM (tRunInfo (_prLogDir jobProject) False) tasks
     forM_ (zip tasks infos) $ \(task, info) -> do
         if info == InfoNotFinished then
             tClean (_prLogDir jobProject) task
         else
-            scriptIO . hPutStrLn stderr $ "skipping task " ++ _tName task
+            scriptIO . err $ format ("skipping task "%fp) (_tName task)
 
 runLog :: Project -> LogOpt -> Script ()
-runLog jobProject (LogOpt groupName lsf) = do
+runLog jobProject (LogOpt groupName) = do
     tasks <- tryRight $ selectTasks groupName jobProject
     mapM_ (tLog $ _prLogDir jobProject) tasks
 
 options :: OP.Parser Options
 options = Options <$> parseProjectFileName <*> parseCommand
   where
-    parseProjectFileName = OP.strOption (OP.short 'p' <> OP.long "projectFile" <> OP.value "tman.project" <>
-                                         OP.showDefault <> OP.metavar "<Project_file>" <>
-                                         OP.help "Project file to work with")
+    parseProjectFileName = OP.option readFP (OP.short 'p' <> OP.long "projectFile" <>
+                                             OP.value "tman.project" <>
+                                             OP.showDefault <> OP.metavar "<Project_file>" <>
+                                             OP.help "Project file to work with")
+    readFP = OP.str >>= return . fromText . T.pack
 
 parseCommand :: OP.Parser Command
 parseCommand = OP.subparser $
@@ -202,25 +230,31 @@ parseCommand = OP.subparser $
     OP.command "print" (parsePrint `withInfo` "print commands") <>
     OP.command "status" (parseStatus `withInfo` "print status for each job") <>
     OP.command "clean" (parseClean `withInfo` "clean output and log files") <>
-    OP.command "log" (parseLog `withInfo` "print log file for a task") <>
-    OP.command "kill" (parseKill `withInfo` "kill jobs")
+    OP.command "log" (parseLog `withInfo` "print log file for a task")
 
 parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
   where
-    parseSubmitOpt = SubmitOpt <$> parseGroupName <*> parseForce <*> parseTest <*> parseSubmissionType <*>
-                     parseQueue <*> parseSubGroup <*> parseChunkSize <*> parseUnchecked
-    parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <> OP.help "force submission of completed tasks"
+    parseSubmitOpt = SubmitOpt <$> parseGroupName <*> parseForce <*> parseTest <*> 
+                                   parseSubmissionType <*> parseQueue <*> parseSubGroup <*> 
+                                   parseChunkSize <*> parseUnchecked
+    parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <>
+                 OP.help "force submission of completed tasks"
     parseTest = OP.switch $ OP.short 't' <> OP.long "test" <>
-                                            OP.help "only print submission commands, do not actually submit"
-    parseSubmissionType = OP.strOption $ OP.short 's' <> OP.long "submissionType" <> OP.value "standard" <>
-                                         OP.showDefault <> OP.help "type of submission [standard | lsf]"
+                            OP.help "only print submission commands, do not actually submit"
+    parseSubmissionType = OP.strOption $ OP.short 's' <> OP.long "submissionType" <>
+                          OP.value "standard" <> OP.showDefault <>
+                          OP.help "type of submission [standard | lsf]"
     parseQueue = OP.strOption $ OP.short 'q' <> OP.long "submissionQueue" <> OP.value "normal" <>
-                                OP.showDefault <> OP.help "LSF submission Queue (only for lsf submissions)"
+                                OP.showDefault <> 
+                                OP.help "LSF submission Queue (only for lsf submissions)"
     parseSubGroup = OP.strOption $ OP.short 'g' <> OP.long "submissionGroup" <>
-                 OP.help "LSF submission Group (only for lsf submissions)"
-    parseChunkSize = OP.option OP.auto $ OP.short 'c' <> OP.long "chunkSize" <> OP.help "Chunk Size (only for Gnu Parallel submissions)"
-    parseUnchecked = OP.switch $ OP.short 'u' <> OP.long "unchecked" <> OP.help "do not check any status, just submit (this is even stronger than force and should be given with care)"
+                    OP.help "LSF submission Group (only for lsf submissions)"
+    parseChunkSize = OP.option OP.auto $ OP.short 'c' <> OP.long "chunkSize" <>
+                     OP.help "Chunk Size (only for Gnu Parallel submissions)"
+    parseUnchecked = OP.switch $ OP.short 'u' <> OP.long "unchecked" <>
+                     OP.help ("do not check any status, just submit (this is even stronger than " ++
+                              "force and should be given with care)")
 
 parseGroupName :: OP.Parser String
 parseGroupName = OP.strArgument $ OP.metavar "<group_desc>" <> OP.help "Job group name" <> OP.value "" <> OP.showDefault
@@ -247,10 +281,9 @@ parsePrint = CmdPrint <$> parsePrintOpt
 parseStatus :: OP.Parser Command
 parseStatus = CmdStatus <$> parseStatusOpt
   where
-    parseStatusOpt = StatusOpt <$> parseGroupName <*> parseSummary <*> parseInfo <*> parseLSFInfo <*> 
+    parseStatusOpt = StatusOpt <$> parseGroupName <*> parseSummary <*> parseInfo <*> 
                      parseSkipSuccessful <*> parseVerbose
     parseInfo = OP.switch $ OP.short 'i' <> OP.long "info" <> OP.help "show runInfo"
-    parseLSFInfo = OP.switch $ OP.short 'l' <> OP.long "LSFInfo" <> OP.help "show lsfInfo"
     parseSkipSuccessful = OP.switch $ OP.short 'S' <> OP.long "skipSuccessful" <> OP.help "skip complete tasks or tasks without a logfile, if -i and/or -l is used"
     parseVerbose = OP.switch $ OP.short 'v' <> OP.long "verbose" <> OP.help "verbose output"
 
@@ -262,11 +295,4 @@ parseClean = CmdClean <$> parseCleanOpt
 parseLog :: OP.Parser Command
 parseLog = CmdLog <$> parseLogOpt
   where
-    parseLogOpt = LogOpt <$> parseGroupName <*> parseLogLSF
-    parseLogLSF = OP.switch $ OP.short 'l' <> OP.long "lsf" <> OP.help "show lsf log file"
-    
-parseKill :: OP.Parser Command
-parseKill = CmdKill <$> parseKillOpt
-  where
-    parseKillOpt = KillOpt <$> parseGroupName <*> parseKillLSF
-    parseKillLSF = OP.switch $ OP.short 'l' <> OP.long "lsf" <> OP.help "via LSF"
+    parseLogOpt = LogOpt <$> parseGroupName
