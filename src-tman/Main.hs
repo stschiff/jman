@@ -50,7 +50,8 @@ data StatusOpt = StatusOpt {
     _stSummary :: Int,
     _stInfo :: Bool,
     _stSkipSuccessful :: Bool,
-    _stVerbose :: Bool
+    _stVerbose :: Bool,
+    _stFull :: Bool
 }
 
 data CleanOpt = CleanOpt {
@@ -86,7 +87,7 @@ runSubmit jobProject
     status <- if unchecked then
             return . repeat $ StatusIncomplete ""
         else
-            mapM (tStatus False) tasks
+            mapM (tStatus False False) tasks
     info <- if unchecked then
             return $ repeat InfoNoLogFile
         else
@@ -127,14 +128,20 @@ runList jobProject opts = do
                       foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $ groups
         scriptIO . mapM_ T.putStrLn $ [format ("Group "%s%": "%d%" job(s)") g num | (g, num) <- entries]
     else do
-        let indices = if (_liFull opts) then [0..6] else [0..4]
-            headers = ["NAME", "MEMORY", "THREADS", "SUBMISSION-QUEUE", "SUBMISSION-GROUP", 
-                                                  "INPUTFILES", "OUTPUTFILES"]
-        scriptIO . T.putStrLn . T.intercalate "\t" . map (headers!!) $ indices
-        scriptIO . mapM_ T.putStrLn . map (tMeta indices) $ tasks
+        if _liFull opts then do
+            let headers = ["NAME", "MEMORY", "THREADS", "HOURS", "INPUTTASKS", "INPUTFILES", 
+                           "OUTPUTFILES"]
+            scriptIO . T.putStrLn . T.intercalate "\t" $ headers
+            scriptIO . mapM_ T.putStrLn . map (tMeta True) $ tasks
+        else do
+            let headers = ["NAME", "MEMORY", "THREADS", "HOURS"]
+            scriptIO . T.putStrLn . T.intercalate "\t" $ headers
+            scriptIO . mapM_ T.putStrLn . map (tMeta False) $ tasks
   where
-    tMeta _ (Task n it ifiles o _ m t h) =
-        format (fp%"\t"%w%"\t"%w%"\t"%w%"\t"%d%"\t"%d%"\t"%d) n it ifiles o m t h
+    tMeta True (Task n it ifiles o _ m t h) =
+        format (fp%"\t"%d%"\t"%d%"\t"%d%"\t"%w%"\t"%w%"\t"%w) n m t h it ifiles o
+    tMeta False (Task n _ _ _ _ m t h) =
+        format (fp%"\t"%d%"\t"%d%"\t"%d) n m t h
         
 runPrint :: Project -> PrintOpt -> Script ()
 runPrint jobProject opts = do
@@ -145,8 +152,9 @@ runStatus :: Project -> StatusOpt -> Script ()
 runStatus jobProject opts = do
     tasks <- tryRight $ selectTasks (_stGroupName opts) jobProject
     let verbose = _stVerbose opts
+        full = _stFull opts
     fullStatusList <- do 
-        status <- mapM (tStatus verbose) tasks
+        status <- mapM (tStatus verbose full) tasks
         info <- if _stInfo opts then
                     mapM (fmap Just . tRunInfo (_prLogDir jobProject) verbose) tasks
                 else
@@ -282,10 +290,11 @@ parseStatus :: OP.Parser Command
 parseStatus = CmdStatus <$> parseStatusOpt
   where
     parseStatusOpt = StatusOpt <$> parseGroupName <*> parseSummary <*> parseInfo <*> 
-                     parseSkipSuccessful <*> parseVerbose
+                     parseSkipSuccessful <*> parseVerbose <*> parseFull
     parseInfo = OP.switch $ OP.short 'i' <> OP.long "info" <> OP.help "show runInfo"
     parseSkipSuccessful = OP.switch $ OP.short 'S' <> OP.long "skipSuccessful" <> OP.help "skip complete tasks or tasks without a logfile, if -i and/or -l is used"
     parseVerbose = OP.switch $ OP.short 'v' <> OP.long "verbose" <> OP.help "verbose output"
+    parseFull = OP.switch $ OP.short 'f' <> OP.long "full" <> OP.help "full status output"
 
 parseClean :: OP.Parser Command
 parseClean = CmdClean <$> parseCleanOpt

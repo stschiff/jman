@@ -26,7 +26,7 @@ options :: OP.Parser Options
 options = Options <$> OP.strArgument (OP.metavar "<NAME>" <>
                                       OP.help "full hierarchical name of the command")
                   <*> OP.strArgument (OP.metavar "<CMD>" <> OP.help "full bash command line")
-                  <*> many (OP.strOption (OP.long "inputTask" <>
+                  <*> many (OP.strOption (OP.short 'I' <> OP.long "inputTask" <>
                             OP.metavar "<Task>" <> OP.help "input task name, can be given multiple times"))
                   <*> many (OP.strOption (OP.long "inputFile" <> OP.short 'i' <>
                             OP.metavar "<File>" <> OP.help "input file, can be given multiple times"))

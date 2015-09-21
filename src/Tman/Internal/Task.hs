@@ -146,21 +146,37 @@ writeJobScript submissionSpec jobFileName command = do
     let c = format ("printf \"SUBMISSION\\t"%s%"\n"%s) submissionName command
     scriptIO $ T.writeFile (encodeString jobFileName) c
     
-tStatus :: Bool -> Task -> Script TaskStatus
-tStatus verbose task = do
-    inputTaskStatus <- mapM (tStatus verbose) $ _tInputTasks task
+tStatus :: Bool -> Bool -> Task -> Script TaskStatus
+tStatus verbose full task = do
+    inputTaskStatus <- mapM (tStatus verbose full) $ _tInputTasks task
     if any (/=StatusComplete) inputTaskStatus then
-        return . StatusIncompleteInputTask . T.intercalate "," $ [format fp $ _tName t | (t, s') <- zip (_tInputTasks task) inputTaskStatus,
-                                                                                         s' /= StatusComplete]
+        if full then
+            return . StatusIncompleteInputTask . T.intercalate "," $
+                [format fp $ _tName t | (t, s') <- zip (_tInputTasks task) inputTaskStatus,
+                                                   s' /= StatusComplete]
+        else
+            return . StatusIncompleteInputTask . format (d%" incomplete input Task(s)") . length $
+                [format fp $ _tName t | (t, s') <- zip (_tInputTasks task) inputTaskStatus,
+                                                   s' /= StatusComplete]
     else do
         iFileSize <- mapM getFileSize $ _tInputFiles task
         when verbose $ scriptIO . err $ format ("checking task "%fp%"\n") (_tName task)
         if any (==(0 :: Int)) iFileSize then
-            return . StatusMissingInputFile . T.intercalate "," $ [format fp f | (f, s') <- zip (_tInputFiles task) iFileSize, s' == 0]
+            if full then
+                return . StatusMissingInputFile . T.intercalate "," $
+                    [format fp f | (f, s') <- zip (_tInputFiles task) iFileSize, s' == 0]
+            else 
+                return . StatusMissingInputFile . format (d%" missing input file(s)") . length $ 
+                    [format fp f | (f, s') <- zip (_tInputFiles task) iFileSize, s' == 0]
         else do
             oFileSize <- mapM getFileSize $ _tOutputFiles task
             if any (==(0 :: Int)) oFileSize then
-                return . StatusIncomplete . T.intercalate "," $ [format fp f | (f, s') <- zip (_tOutputFiles task) oFileSize, s' == 0]
+                if full then 
+                    return . StatusIncomplete . T.intercalate "," $
+                        [format fp f | (f, s') <- zip (_tOutputFiles task) oFileSize, s' == 0]
+                else
+                    return . StatusIncomplete . format (d%" incomplete output file(s)") .length $ 
+                        [format fp f | (f, s') <- zip (_tOutputFiles task) oFileSize, s' == 0]
             else do
                 inputMod <- mapM datefile $ allInputFiles task
                 outputMod <- mapM datefile $ _tOutputFiles task
