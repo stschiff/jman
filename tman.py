@@ -1,6 +1,6 @@
 import json
 
-def makeTask(name, command, inputFiles=[], outputFiles=[], mem=100, nrThreads=1, submissionQueue="normal", submissionGroup=""):
-    task = {"name":name, "inputFiles":inputFiles, "outputFiles":outputFiles, "command":command, "mem":mem,
-            "nrThreads":nrThreads, "submissionQueue":submissionQueue, "submissionGroup":submissionGroup}
+def makeTask(name, command, inputTasks=[], inputFiles=[], outputFiles=[], mem=100, nrThreads=1, hours=12):
+    task = {"name":name, "inputTasks":inputTasks, "inputFiles":inputFiles, "outputFiles":outputFiles, "command":command, 
+            "mem":mem, "nrThreads":nrThreads, "hours":hours}
     print(json.dumps(task))
