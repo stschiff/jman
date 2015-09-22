@@ -23,7 +23,7 @@ import Filesystem.Path.CurrentOS (encodeString)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Prelude hiding (FilePath)
-import Control.Error (Script, scriptIO, tryAssert, throwE, tryHead, tryJust, tryRead)
+import Control.Error (Script, scriptIO, tryAssert, throwE, headErr, justErr, tryRight, readErr)
 import Control.Monad (when, mzero)
 import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=), encode)
@@ -87,6 +87,7 @@ data TaskStatus = StatusIncompleteInputTask T.Text
                 | StatusComplete deriving (Eq, Ord, Show)
 
 data TaskRunInfo = InfoNoLogFile
+                 | InfoUnknownLogFormat
                  | InfoNotFinished
                  | InfoFailed FailedReason
                  | InfoSuccess RunInfo deriving (Eq, Ord, Show)
@@ -114,14 +115,15 @@ tSubmit projectDir test submissionSpec task = do
             let m = _tMem task
                 rArg = format ("select[mem>"%d%"] rusage[mem="%d%"] span[hosts=1]") m m
                 cmd = ["bash", format fp jobFileName]
-                lsf_args = ["-J", format fp $ _tName task, "-q", queue, "-R", rArg, "-M", format d $ _tMem task,
+                lsf_args = ["-J", format fp $ _tName task, "-R", rArg, "-M", format d $ _tMem task,
                         "-n", format d $ _tNrThreads task, "-oo", format fp $ logFileName projectDir task]
-                group_args = ["-G", group]
-                args = lsf_args ++ group_args ++ cmd
+                group_args = if T.null group then [] else ["-G", group]
+                queue_args = if T.null queue then [] else ["-q", queue]
+                args = lsf_args ++ group_args ++ queue_args ++ cmd
             if test then
                 scriptIO $ T.putStrLn (T.intercalate " " $ wrapCmdArgs ("bsub":args))
             else do
-                touch $ logFile
+                touch logFile
                 exitCode <- proc "bsub" args empty
                 case exitCode of
                     ExitFailure i -> throwE ("bsub command failed with exit code " ++ show i)
@@ -143,40 +145,26 @@ writeJobScript submissionSpec jobFileName command = do
             LSFsubmission _ _ -> "LSF"
             SequentialExecutionSubmission -> "Sequential"
             GnuParallelSubmission _ -> "GNUparallel"
-    let c = format ("printf \"SUBMISSION\\t"%s%"\n"%s) submissionName command
+    let c = format ("echo "%s%"\n"%s%"\n") submissionName command
     scriptIO $ T.writeFile (encodeString jobFileName) c
     
-tStatus :: Bool -> Bool -> Task -> Script TaskStatus
-tStatus verbose full task = do
-    inputTaskStatus <- mapM (tStatus verbose full) $ _tInputTasks task
+tStatus :: Task -> Script TaskStatus
+tStatus task = do
+    inputTaskStatus <- mapM tStatus (_tInputTasks task)
     if any (/=StatusComplete) inputTaskStatus then
-        if full then
-            return . StatusIncompleteInputTask . T.intercalate "," $
-                [format fp $ _tName t | (t, s') <- zip (_tInputTasks task) inputTaskStatus,
-                                                   s' /= StatusComplete]
-        else
-            return . StatusIncompleteInputTask . format (d%" incomplete input Task(s)") . length $
-                [format fp $ _tName t | (t, s') <- zip (_tInputTasks task) inputTaskStatus,
-                                                   s' /= StatusComplete]
+        return . StatusIncompleteInputTask . T.intercalate "," $
+            [format fp $ _tName t | (t, s') <- zip (_tInputTasks task) inputTaskStatus,
+                                               s' /= StatusComplete]
     else do
         iFileSize <- mapM getFileSize $ _tInputFiles task
-        when verbose $ scriptIO . err $ format ("checking task "%fp%"\n") (_tName task)
-        if any (==(0 :: Int)) iFileSize then
-            if full then
-                return . StatusMissingInputFile . T.intercalate "," $
-                    [format fp f | (f, s') <- zip (_tInputFiles task) iFileSize, s' == 0]
-            else 
-                return . StatusMissingInputFile . format (d%" missing input file(s)") . length $ 
-                    [format fp f | (f, s') <- zip (_tInputFiles task) iFileSize, s' == 0]
+        if (0 :: Int) `elem` iFileSize then
+            return . StatusMissingInputFile . T.intercalate "," $
+                [format fp f | (f, s') <- zip (_tInputFiles task) iFileSize, s' == 0]
         else do
             oFileSize <- mapM getFileSize $ _tOutputFiles task
-            if any (==(0 :: Int)) oFileSize then
-                if full then 
-                    return . StatusIncomplete . T.intercalate "," $
-                        [format fp f | (f, s') <- zip (_tOutputFiles task) oFileSize, s' == 0]
-                else
-                    return . StatusIncomplete . format (d%" incomplete output file(s)") .length $ 
-                        [format fp f | (f, s') <- zip (_tOutputFiles task) oFileSize, s' == 0]
+            if (0 :: Int) `elem` oFileSize then
+                return . StatusIncomplete . T.intercalate "," $
+                    [format fp f | (f, s') <- zip (_tOutputFiles task) oFileSize, s' == 0]
             else do
                 inputMod <- mapM datefile $ allInputFiles task
                 outputMod <- mapM datefile $ _tOutputFiles task
@@ -192,50 +180,49 @@ tStatus verbose full task = do
             return $ bytes fs
         else
             return 0
-    allInputFiles t = (concatMap _tOutputFiles $ _tInputTasks t) ++ _tInputFiles t
+    allInputFiles t = concatMap _tOutputFiles (_tInputTasks t) ++ _tInputFiles t
 
-tRunInfo :: FilePath -> Bool -> Task -> Script TaskRunInfo
-tRunInfo projectDir verbose task = do
-    logFormat <- autodetectLogFormat projectDir task
-    case logFormat of
-        "LSF" -> tLSFrunInfo projectDir verbose task
-        "Sequential" -> throwE "Sequential Log Format not implemented yet"
-        "GNUparallel" -> throwE "Gnu Parallel Log Format not implemented yet"
-        _ -> throwE "unknown format in log file"
-
-autodetectLogFormat :: FilePath -> Task -> Script T.Text
-autodetectLogFormat = undefined
-
-tLSFrunInfo :: FilePath -> Bool -> Task -> Script TaskRunInfo
-tLSFrunInfo projectDir verbose task = do
-    when verbose $ scriptIO . err $ format ("getting LSF run info for task "%fp%"\n") (_tName task)
-    logFileExists <- scriptIO . testfile $ logFileName projectDir task
+tRunInfo :: FilePath -> Task -> Script TaskRunInfo
+tRunInfo projectDir task = do
+    let fn = logFileName projectDir task
+    logFileExists <- scriptIO . testfile $ fn
     if not logFileExists then
         return InfoNoLogFile
     else do
-        c <- scriptIO . T.readFile . encodeString . logFileName projectDir $ task
-        let (_, infoPart) = T.breakOn "Sender: LSF System" c
-        if T.null infoPart then return InfoNotFinished else
-            if "Successfully completed." `T.isInfixOf` infoPart then
-                parseLSFrunInfo infoPart >>= return . InfoSuccess
-            else
-                if "TERM_MEMLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedMem else
-                    if "TERM_RUNLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedRuntime else
-                        return $ InfoFailed FailedUnknown
+        content <- scriptIO . T.readFile . encodeString $ fn
+        let l = T.lines content
+        if null l then return InfoNoLogFile else do
+            let headerLine = head l
+            case headerLine of
+                "LSF" -> tryRight $ tLSFrunInfo content
+                _ -> return InfoUnknownLogFormat
 
-parseLSFrunInfo :: T.Text -> Script RunInfo
+tLSFrunInfo :: T.Text -> Either String TaskRunInfo
+tLSFrunInfo c= do
+    let (_, infoPart) = T.breakOn "Sender: LSF System" c
+    if T.null infoPart then return InfoNotFinished else
+        if "Successfully completed." `T.isInfixOf` infoPart then
+            InfoSuccess `fmap` parseLSFrunInfo infoPart
+        else
+            if "TERM_MEMLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedMem else
+                if "TERM_RUNLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedRuntime else
+                    return $ InfoFailed FailedUnknown
+
+parseLSFrunInfo :: T.Text -> Either String RunInfo
 parseLSFrunInfo content = do
     let l = T.lines content
-    beginLine <- tryHead "cannot find starting time in LSF log output" . filter (T.isPrefixOf "Started at ") $ l
-    endLine <- tryHead "cannot find end time in LSF log output" . filter (T.isPrefixOf "Results reported at ") $ l
+    beginLine <- headErr "cannot find starting time in LSF log output" . filter (T.isPrefixOf "Started at ") $ l
+    endLine <- headErr "cannot find end time in LSF log output" . filter (T.isPrefixOf "Results reported at ") $ l
     let beginTimeStr = T.drop (T.length "Started at ") beginLine
         endTimeStr = T.drop (T.length "Results reported at ") endLine
-    maxMemLine <- tryHead "cannot find maximum memory in LSF log output" . filter (T.isPrefixOf "    Max Memory :             ") $ l
-    maxMemStr <- tryHead "cannot read maximum memory in LSF log output" . T.words . T.drop (T.length "    Max Memory :             ") $ 
-                    maxMemLine
-    maxMem <- tryRead "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
-    beginTime <- tryJust "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $ beginTimeStr
-    endTime <- tryJust "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $ endTimeStr
+    maxMemLine <- headErr "cannot find maximum memory in LSF log output" . filter (T.isPrefixOf "    Max Memory :             ") $ l
+    maxMemStr <- headErr "cannot read maximum memory in LSF log output" . T.words . T.drop
+                 (T.length "    Max Memory :             ") $ maxMemLine
+    maxMem <- readErr "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
+    beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $ 
+                 beginTimeStr
+    endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $ 
+               endTimeStr
     return $ RunInfo beginTime endTime maxMem
 
 tClean :: FilePath -> Task -> Script ()
