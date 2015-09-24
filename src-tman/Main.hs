@@ -205,8 +205,8 @@ options = Options <$> parseProjectFileName <*> parseGroupName <*> parseAll <*> p
                                              OP.showDefault <> OP.metavar "<Project_file>" <>
                                              OP.help "Project file to work with")
     readFP = (fromText . T.pack) `fmap` OP.str
-    parseGroupName = OP.strOption $ OP.short 'g' <> OP.long "jobGroup" <> OP.metavar "<group_desc>" <>
-                                    OP.help "Job group name" <> OP.value "" <> OP.showDefault
+    parseGroupName = OP.strOption $ OP.short 'j' <> OP.long "job" <> OP.metavar "<group_desc>" <>
+                                    OP.help "Job or Jobgroup name" <> OP.value "" <> OP.showDefault
     parseAll = OP.switch $ OP.short 'a' <> OP.long "all" <> OP.help "select all jobs"
 
 parseCommand :: OP.Parser Command
