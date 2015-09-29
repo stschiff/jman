@@ -145,7 +145,8 @@ runStatus logDir tasks summaryLevel withRunInfo skipSuccessful full = do
         return $ zip status info
     if summaryLevel > 0 then do
         let groups =
-            map (T.intercalate "/" . take summaryLevel . T.splitOn "/" . format fp . _tName) tasks
+                map (T.intercalate "/" . take summaryLevel . T.splitOn "/" . format fp . _tName)
+                tasks
             dict :: M.Map (T.Text, T.Text) Int
             dict = foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $
                    zip groups (map showFullStatus fullStatusList)
