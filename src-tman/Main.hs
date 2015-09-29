@@ -135,19 +135,17 @@ runList tasks summaryLevel full = do
         format (fp%"\t"%d%"\t"%d%"\t"%d) n m t h
 
 runStatus :: FilePath -> [Task] -> Int -> Bool -> Bool -> Bool -> Script ()
-runStatus logDir tasks summaryLevel withInfo skipSuccessful full = do
+runStatus logDir tasks summaryLevel withRunInfo skipSuccessful full = do
     fullStatusList <- do
         status <- mapM tStatus tasks
-        info <- if withInfo then
+        info <- if withRunInfo then
                     mapM (fmap Just . tRunInfo logDir) tasks
                 else
                     return [Nothing | _ <- tasks]
         return $ zip status info
     if summaryLevel > 0 then do
         let groups =
-                map (T.intercalate "/" . take summaryLevel . T.splitOn "/" . format fp . _tName)
-                    tasks
-
+            map (T.intercalate "/" . take summaryLevel . T.splitOn "/" . format fp . _tName) tasks
             dict :: M.Map (T.Text, T.Text) Int
             dict = foldl (\mm k -> M.insertWith (+) k 1 mm) M.empty $
                    zip groups (map showFullStatus fullStatusList)
@@ -191,13 +189,13 @@ runInfo :: FilePath -> [Task] -> Script ()
 runInfo logDir tasks = do
     scriptIO . putStrLn $ "JOB\tSTATUS\tDURATION\tMAX_MEM\tSTART_TIME\tEND_TIME"
     info <- mapM (tRunInfo logDir) tasks
-    forM_ (zip tasks info) $ \(task, info) ->
-        case info of
+    forM_ (zip tasks info) $ \(task, i) ->
+        case i of
             InfoSuccess (RunInfo begin end max_) -> do
                 let timeDiff = end `diffUTCTime` begin
                 scriptIO . T.putStrLn $ format (fp%"\tSucess\t"%w%"\t"%w%"\t"%w%"\t"%w) (_tName task) timeDiff max_ begin end
             InfoFailed r -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) r
-            _ -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) info
+            _ -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) i
 
 options :: OP.Parser Options
 options = Options <$> parseProjectFileName <*> parseGroupName <*> parseAll <*> parseCommand
@@ -213,6 +211,7 @@ options = Options <$> parseProjectFileName <*> parseGroupName <*> parseAll <*> p
 
 parseCommand :: OP.Parser Command
 parseCommand = OP.subparser $
+    OP.command "submit" (parseSubmit `withInfo` "submit jobs") <>
     OP.command "submit" (parseSubmit `withInfo` "submit jobs") <>
     OP.command "list" (parseList `withInfo` "list job info") <>
     OP.command "print" (parsePrint `withInfo` "print commands") <>
@@ -265,8 +264,9 @@ parsePrint = pure CmdPrint
 parseStatus :: OP.Parser Command
 parseStatus = CmdStatus <$> parseStatusOpt
   where
-    parseStatusOpt = StatusOpt <$> parseSummary <*> parseInfo <*> parseSkipSuccessful <*> parseFull
-    parseInfo = OP.switch $ OP.short 'i' <> OP.long "info" <> OP.help "show runInfo"
+    parseStatusOpt = StatusOpt <$> parseSummary <*> parseWithRunInfo <*> parseSkipSuccessful <*>
+                                   parseFull
+    parseWithRunInfo = OP.switch $ OP.short 'i' <> OP.long "info" <> OP.help "show runInfo"
     parseSkipSuccessful = OP.switch $ OP.short 'S' <> OP.long "skipSuccessful" <> OP.help "skip complete tasks or tasks without a logfile, if -i and/or -l is used"
     parseFull = OP.switch $ OP.short 'f' <> OP.long "full" <> OP.help "full status output"
 

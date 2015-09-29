@@ -16,7 +16,7 @@ module Tman.Internal.Task (
     printTask
 ) where
 
-import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input, err)
+import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input)
 import Turtle (UTCTime, empty, ExitCode(..), FilePath, (</>), (<.>), directory)
 import Turtle.Format (format, fp, d, (%), s)
 import Filesystem.Path.CurrentOS (encodeString)
@@ -138,7 +138,7 @@ tSubmit projectDir test submissionSpec task = do
         GnuParallelSubmission _ -> throwE "Gnu Parallel not yet implemented"
   where
     wrapCmdArgs args = [if " " `T.isInfixOf` a then T.cons '\"' . flip T.snoc '\"' $ a else a | a <- args]
-            
+
 writeJobScript :: SubmissionSpec -> FilePath -> T.Text -> Script ()
 writeJobScript submissionSpec jobFileName command = do
     let submissionName = case submissionSpec of
@@ -147,7 +147,7 @@ writeJobScript submissionSpec jobFileName command = do
             GnuParallelSubmission _ -> "GNUparallel"
     let c = format ("echo "%s%"\n"%s%"\n") submissionName command
     scriptIO $ T.writeFile (encodeString jobFileName) c
-    
+
 tStatus :: Task -> Script TaskStatus
 tStatus task = do
     inputTaskStatus <- mapM tStatus (_tInputTasks task)
@@ -219,9 +219,9 @@ parseLSFrunInfo content = do
     maxMemStr <- headErr "cannot read maximum memory in LSF log output" . T.words . T.drop
                  (T.length "    Max Memory :             ") $ maxMemLine
     maxMem <- readErr "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
-    beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $ 
+    beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $
                  beginTimeStr
-    endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $ 
+    endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $
                endTimeStr
     return $ RunInfo beginTime endTime maxMem
 
