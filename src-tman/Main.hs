@@ -79,7 +79,7 @@ runWithOptions (Options projectFileName groupName allJobs cmdOpts) = runScript $
     selectTasks jobProject =
         let ret = filter ((~~ groupName) . encodeString . _tName) . _prTasks $ jobProject
         in  if null ret then Left "No Tasks found" else Right ret
-    
+
 runSubmit :: FilePath -> [Task] -> Bool -> Bool -> String -> String -> String -> Int -> Bool -> Script ()
 runSubmit projectDir tasks force test submissionType queue group chunkSize unchecked = do
     status <- if unchecked then
@@ -107,7 +107,7 @@ runSubmit projectDir tasks force test submissionType queue group chunkSize unche
                 StatusComplete -> if force then
                         tSubmit projectDir test submissionSpec t
                     else
-                        scriptIO . err $ format ("Job "%fp%": already complete, skipping (use --force to submit anyway)") 
+                        scriptIO . err $ format ("Job "%fp%": already complete, skipping (use --force to submit anyway)")
                                          (_tName t)
                 _ -> tSubmit projectDir test submissionSpec t
 
@@ -120,7 +120,7 @@ runList tasks summaryLevel full = do
         scriptIO . mapM_ T.putStrLn $ [format ("Group "%s%": "%d%" job(s)") g num | (g, num) <- entries]
     else
         if full then do
-            let headers = ["NAME", "MEMORY", "THREADS", "HOURS", "INPUTTASKS", "INPUTFILES", 
+            let headers = ["NAME", "MEMORY", "THREADS", "HOURS", "INPUTTASKS", "INPUTFILES",
                            "OUTPUTFILES"]
             scriptIO . T.putStrLn . T.intercalate "\t" $ headers
             scriptIO  . mapM_ (T.putStrLn . tMeta True) $ tasks
@@ -133,18 +133,18 @@ runList tasks summaryLevel full = do
         format (fp%"\t"%d%"\t"%d%"\t"%d%"\t"%w%"\t"%w%"\t"%w) n m t h it ifiles o
     tMeta False (Task n _ _ _ _ m t h) =
         format (fp%"\t"%d%"\t"%d%"\t"%d) n m t h
-        
+
 runStatus :: FilePath -> [Task] -> Int -> Bool -> Bool -> Bool -> Script ()
-runStatus logDir tasks summaryLevel withInfo skipSuccessful full = do
-    fullStatusList <- do 
+runStatus logDir tasks summaryLevel withRunInfo skipSuccessful full = do
+    fullStatusList <- do
         status <- mapM tStatus tasks
-        info <- if withInfo then
+        info <- if withRunInfo then
                     mapM (fmap Just . tRunInfo logDir) tasks
                 else
                     return [Nothing | _ <- tasks]
         return $ zip status info
     if summaryLevel > 0 then do
-        let groups = map (T.intercalate "/" . take summaryLevel . T.splitOn "/" . format fp . _tName) 
+        let groups = map (T.intercalate "/" . take summaryLevel . T.splitOn "/" . format fp . _tName)
                          tasks
 
             dict :: M.Map (T.Text, (TaskStatus, Maybe TaskRunInfo)) Int
@@ -156,7 +156,7 @@ runStatus logDir tasks summaryLevel withInfo skipSuccessful full = do
                           groupBy (\((e1, _), _) ((e2, _), _) -> e1 == e2) .
                           sortBy (\((e1, _), _) ((e2, _), _) -> e1 `compare` e2) . M.toList $ dict
 
-        scriptIO . mapM_ T.putStrLn $ 
+        scriptIO . mapM_ T.putStrLn $
             [format ("Group "%s%": "%s) g $
              T.intercalate ", " [format (s%"("%w%")") (showFullStatus st) c | (st, c) <- l] |
              (g, l) <- entries]
@@ -184,18 +184,18 @@ runStatus logDir tasks summaryLevel withInfo skipSuccessful full = do
     showI (Just (InfoSuccess _)) = "+Success"
     showI (Just i) = format ("+"%w) i
     showI Nothing = ""
-    
+
 runInfo :: FilePath -> [Task] -> Script ()
 runInfo logDir tasks = do
     scriptIO . putStrLn $ "JOB\tSTATUS\tDURATION\tMAX_MEM\tSTART_TIME\tEND_TIME"
     info <- mapM (tRunInfo logDir) tasks
-    forM_ (zip tasks info) $ \(task, info) ->
-        case info of
+    forM_ (zip tasks info) $ \(task, i) ->
+        case i of
             InfoSuccess (RunInfo begin end max_) -> do
                 let timeDiff = end `diffUTCTime` begin
                 scriptIO . T.putStrLn $ format (fp%"\tSucess\t"%w%"\t"%w%"\t"%w%"\t"%w) (_tName task) timeDiff max_ begin end
             InfoFailed r -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) r
-            _ -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) info
+            _ -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) i
 
 options :: OP.Parser Options
 options = Options <$> parseProjectFileName <*> parseGroupName <*> parseAll <*> parseCommand
@@ -212,6 +212,7 @@ options = Options <$> parseProjectFileName <*> parseGroupName <*> parseAll <*> p
 parseCommand :: OP.Parser Command
 parseCommand = OP.subparser $
     OP.command "submit" (parseSubmit `withInfo` "submit jobs") <>
+    OP.command "submit" (parseSubmit `withInfo` "submit jobs") <>
     OP.command "list" (parseList `withInfo` "list job info") <>
     OP.command "print" (parsePrint `withInfo` "print commands") <>
     OP.command "status" (parseStatus `withInfo` "print status for each job") <>
@@ -222,8 +223,8 @@ parseCommand = OP.subparser $
 parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
   where
-    parseSubmitOpt = SubmitOpt <$> parseForce <*> parseTest <*> 
-                                   parseSubmissionType <*> parseQueue <*> parseSubGroup <*> 
+    parseSubmitOpt = SubmitOpt <$> parseForce <*> parseTest <*>
+                                   parseSubmissionType <*> parseQueue <*> parseSubGroup <*>
                                    parseChunkSize <*> parseUnchecked
     parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <>
                  OP.help "force submission of completed tasks"
@@ -233,7 +234,7 @@ parseSubmit = CmdSubmit <$> parseSubmitOpt
                           OP.value "seq" <> OP.showDefault <>
                           OP.help "type of submission [seq | par | lsf]"
     parseQueue = OP.strOption $ OP.short 'q' <> OP.long "submissionQueue" <> OP.value "" <>
-                                OP.showDefault <> 
+                                OP.showDefault <>
                                 OP.help "LSF submission Queue (only for lsf submissions)"
     parseSubGroup = OP.strOption $ OP.short 'g' <> OP.long "submissionGroup" <>
                     OP.value "" <> OP.help "LSF submission Group (only for lsf submissions)"
@@ -253,7 +254,7 @@ parseList = CmdList <$> parseListOpt
     parseFull = OP.switch $ OP.short 'f' <> OP.long "full" <> OP.help "show full list"
 
 parseSummary :: OP.Parser Int
-parseSummary = OP.option OP.auto $ OP.short 's' <> OP.long "summaryLevel" <> OP.value 0 <> OP.showDefault <> 
+parseSummary = OP.option OP.auto $ OP.short 's' <> OP.long "summaryLevel" <> OP.value 0 <> OP.showDefault <>
                                      OP.metavar "<Level>" <>
                                      OP.help "summarize status for groups at given level, leave 0 for now grouping"
 
@@ -263,8 +264,9 @@ parsePrint = pure CmdPrint
 parseStatus :: OP.Parser Command
 parseStatus = CmdStatus <$> parseStatusOpt
   where
-    parseStatusOpt = StatusOpt <$> parseSummary <*> parseInfo <*> parseSkipSuccessful <*> parseFull
-    parseInfo = OP.switch $ OP.short 'i' <> OP.long "info" <> OP.help "show runInfo"
+    parseStatusOpt = StatusOpt <$> parseSummary <*> parseWithRunInfo <*> parseSkipSuccessful <*>
+                                   parseFull
+    parseWithRunInfo = OP.switch $ OP.short 'i' <> OP.long "info" <> OP.help "show runInfo"
     parseSkipSuccessful = OP.switch $ OP.short 'S' <> OP.long "skipSuccessful" <> OP.help "skip complete tasks or tasks without a logfile, if -i and/or -l is used"
     parseFull = OP.switch $ OP.short 'f' <> OP.long "full" <> OP.help "full status output"
 
