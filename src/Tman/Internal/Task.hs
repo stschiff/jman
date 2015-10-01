@@ -219,9 +219,9 @@ parseLSFrunInfo content = do
     maxMemStr <- headErr "cannot read maximum memory in LSF log output" . T.words . T.drop
                  (T.length "    Max Memory :             ") $ maxMemLine
     maxMem <- readErr "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
-    beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $
+    beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %e %T %Y" . T.unpack $
                  beginTimeStr
-    endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %d %T %Y" . T.unpack $
+    endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %e %T %Y" . T.unpack $
                endTimeStr
     return $ RunInfo beginTime endTime maxMem
 

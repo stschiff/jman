@@ -66,7 +66,10 @@ makeProject (ProjectSpec name logDir taskSpecs) = do
 
 interpolateCommand :: Task -> Either String T.Text
 interpolateCommand (Task n it ifiles ofiles cmd _ _ _) = do
-    chunks <- A.parseOnly (parser <* A.endOfInput) cmd
+    let chunksParse = A.parseOnly (parser <* A.endOfInput) cmd
+    chunks <- case chunksParse of
+        Left _ -> Left $ T.unpack (format ("error in task "%fp%": problematic tags in command: "%s) n cmd)
+        Right a -> Right a
     textChunks <- mapM chunkToText chunks
     return $ T.concat textChunks
   where
