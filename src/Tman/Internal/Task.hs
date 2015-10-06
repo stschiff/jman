@@ -16,18 +16,21 @@ module Tman.Internal.Task (
     printTask
 ) where
 
-import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input)
-import Turtle (UTCTime, empty, ExitCode(..), FilePath, (</>), (<.>), directory)
-import Turtle.Format (format, fp, d, (%), s)
-import Filesystem.Path.CurrentOS (encodeString)
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import Prelude hiding (FilePath)
 import Control.Error (Script, scriptIO, tryAssert, throwE, headErr, justErr, tryRight, readErr)
 import Control.Monad (when, mzero)
-import qualified Data.ByteString.Lazy.Char8 as B
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=), encode)
+import qualified Data.ByteString.Lazy.Char8 as B
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Time (parseTimeM, defaultTimeLocale)
+import Data.Time.Clock (getCurrentTime)
+import Filesystem.Path.CurrentOS (encodeString)
+import Turtle (UTCTime, empty, ExitCode(..), FilePath, (</>), (<.>), directory)
+import Turtle.Format (format, fp, d, (%), s)
+import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input, err, shell, echo)
+import Prelude hiding (FilePath)
+import System.IO (withFile, IOMode(..), hPutStrLn)
+import qualified System.Process as P
 
 data TaskSpec = TaskSpec {
     _tsName :: T.Text,
@@ -101,7 +104,6 @@ data RunInfo = RunInfo {
 } deriving (Eq, Show, Ord)
 
 data SubmissionSpec = SequentialExecutionSubmission
-                    | GnuParallelSubmission Int -- Number of jobs to be run parallel
                     | LSFsubmission T.Text T.Text -- group, queue
 
 tSubmit :: FilePath -> Bool -> SubmissionSpec -> Task -> Script ()
@@ -121,21 +123,27 @@ tSubmit projectDir test submissionSpec task = do
                 queue_args = if T.null queue then [] else ["-q", queue]
                 args = lsf_args ++ group_args ++ queue_args ++ cmd
             if test then
-                scriptIO $ T.putStrLn (T.intercalate " " $ wrapCmdArgs ("bsub":args))
+                echo (T.intercalate " " $ wrapCmdArgs ("bsub":args))
             else do
                 touch logFile
                 exitCode <- proc "bsub" args empty
                 case exitCode of
                     ExitFailure i -> throwE ("bsub command failed with exit code " ++ show i)
                     _ -> return ()
-        SequentialExecutionSubmission -> throwE "sequential execution not yet implemented"
-            -- if test then
-            --     scriptIO $ putStrLn ("bash " ++ jobFileName)
-            -- else do
-            --     scriptIO . touch $ logFile
-            --     _ <- scriptIO $ spawnProcess "bash" [jobFileName]
-            --     scriptIO (hPutStrLn stderr $ "job <" ++ _tName task ++ "> started")
-        GnuParallelSubmission _ -> throwE "Gnu Parallel not yet implemented"
+        SequentialExecutionSubmission -> do
+            if test then
+                echo $ format("bash "%fp) jobFileName
+            else do
+                scriptIO . withFile (encodeString logFile) WriteMode $ \logFileH -> do
+                    err $ format ("running job: "%fp) (_tName task)
+                    startT <- getCurrentTime
+                    let processRaw = P.proc "/usr/bin/time" ["--verbose", "bash", encodeString jobFileName]
+                    (_, _, _, pHandle) <- P.createProcess (processRaw {P.std_err = P.UseHandle logFileH, P.std_out = P.UseHandle logFileH})
+                    _ <- P.waitForProcess pHandle
+                    endT <- getCurrentTime
+                    withFile (encodeString logFile) AppendMode $ \logFileH' -> do
+                        hPutStrLn logFileH' ("Start Time: " ++ show startT)
+                        hPutStrLn logFileH' ("End Time: " ++ show endT)
   where
     wrapCmdArgs args = [if " " `T.isInfixOf` a then T.cons '\"' . flip T.snoc '\"' $ a else a | a <- args]
 
@@ -144,7 +152,6 @@ writeJobScript submissionSpec jobFileName command = do
     let submissionName = case submissionSpec of
             LSFsubmission _ _ -> "LSF"
             SequentialExecutionSubmission -> "Sequential"
-            GnuParallelSubmission _ -> "GNUparallel"
     let c = format ("echo "%s%"\n"%s%"\n") submissionName command
     scriptIO $ T.writeFile (encodeString jobFileName) c
 
@@ -195,10 +202,11 @@ tRunInfo projectDir task = do
             let headerLine = head l
             case headerLine of
                 "LSF" -> tryRight $ tLSFrunInfo content
+                "Sequential" -> tryRight $ tSeqRunInfo content
                 _ -> return InfoUnknownLogFormat
 
 tLSFrunInfo :: T.Text -> Either String TaskRunInfo
-tLSFrunInfo c= do
+tLSFrunInfo c = do
     let (_, infoPart) = T.breakOn "Sender: LSF System" c
     if T.null infoPart then return InfoNotFinished else
         if "Successfully completed." `T.isInfixOf` infoPart then
@@ -225,6 +233,32 @@ parseLSFrunInfo content = do
                endTimeStr
     return $ RunInfo beginTime endTime maxMem
 
+tSeqRunInfo :: T.Text -> Either String TaskRunInfo
+tSeqRunInfo c = do
+    let (_, infoPart) = T.breakOn "Command being timed" c
+    if T.null infoPart then return InfoNotFinished else
+        if "Exit status: 0" `T.isInfixOf` infoPart then
+            InfoSuccess `fmap` parseSeqRunInfo infoPart
+        else
+            return $ InfoFailed FailedUnknown
+
+parseSeqRunInfo :: T.Text -> Either String RunInfo
+parseSeqRunInfo content = do
+    let l = T.lines content
+    beginLine <- headErr "cannot find starting time in GNU time log output" . filter (T.isPrefixOf "Start Time: ") $ l
+    endLine <- headErr "cannot find end time in GNU time log output" . filter (T.isPrefixOf "End Time: ") $ l
+    let beginTimeStr = T.drop (T.length "Start Time: ") beginLine
+        endTimeStr = T.drop (T.length "End Time: ") endLine
+    maxMemLine <- headErr "cannot find maximum memory in LSF log output" . filter (T.isPrefixOf "\tMaximum resident set size (kbytes): ") $ l
+    maxMemStr <- headErr "cannot read maximum memory in LSF log output" . T.words . T.drop
+                 (T.length "\tMaximum resident set size (kbytes): ") $ maxMemLine
+    maxMem <- readErr "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
+    beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%F %X%Q UTC" . T.unpack $
+                 beginTimeStr
+    endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%F %X%Q UTC" . T.unpack $
+               endTimeStr
+    return $ RunInfo beginTime endTime (maxMem / 1000)
+    
 tClean :: FilePath -> Task -> Script ()
 tClean projectDir task = do
     let jobFile = projectDir </> _tName task <.> "job.sh"
@@ -240,7 +274,7 @@ tLog :: FilePath -> Task -> Script ()
 tLog projectDir task = do
     testfile fn >>= tryAssert "Log file doesn't exist"
     scriptIO . stdout . input $ fn
-    scriptIO $ putStrLn ""
+    echo ""
   where
     fn = logFileName projectDir task
 

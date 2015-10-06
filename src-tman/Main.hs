@@ -93,7 +93,6 @@ runSubmit projectDir tasks force test submissionType queue group chunkSize unche
     submissionSpec <- case submissionType of
         "lsf" -> return $ LSFsubmission (T.pack group) (T.pack queue)
         "seq" -> return SequentialExecutionSubmission
-        "par" -> return $ GnuParallelSubmission chunkSize
         _ -> throwE "unknown submission type"
     forM_ (zip3 tasks status info) $ \(t, st, i) ->
         if i == InfoNotFinished then
@@ -194,7 +193,7 @@ runInfo logDir tasks = do
         case i of
             InfoSuccess (RunInfo begin end max_) -> do
                 let timeDiff = end `diffUTCTime` begin
-                scriptIO . T.putStrLn $ format (fp%"\tSucess\t"%w%"\t"%w%"\t"%w%"\t"%w) (_tName task) timeDiff max_ begin end
+                scriptIO . T.putStrLn $ format (fp%"\tSuccess\t"%w%"\t"%w%"\t"%w%"\t"%w) (_tName task) timeDiff max_ begin end
             InfoFailed r -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) r
             _ -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) i
 
@@ -212,7 +211,6 @@ options = Options <$> parseProjectFileName <*> parseGroupName <*> parseAll <*> p
 
 parseCommand :: OP.Parser Command
 parseCommand = OP.subparser $
-    OP.command "submit" (parseSubmit `withInfo` "submit jobs") <>
     OP.command "submit" (parseSubmit `withInfo` "submit jobs") <>
     OP.command "list" (parseList `withInfo` "list job info") <>
     OP.command "print" (parsePrint `withInfo` "print commands") <>
