@@ -187,13 +187,12 @@ runStatus logDir tasks summaryLevel withRunInfo skipSuccessful full = do
 
 runInfo :: FilePath -> [Task] -> Script ()
 runInfo logDir tasks = do
-    scriptIO . putStrLn $ "JOB\tSTATUS\tDURATION\tMAX_MEM\tSTART_TIME\tEND_TIME"
+    scriptIO . putStrLn $ "JOB\tSTATUS\tDURATION [(h:mm:ss or m:ss)]\tMAX_MEM [Mb]"
     info <- mapM (tRunInfo logDir) tasks
     forM_ (zip tasks info) $ \(task, i) ->
         case i of
-            InfoSuccess (RunInfo begin end max_) -> do
-                let timeDiff = end `diffUTCTime` begin
-                scriptIO . T.putStrLn $ format (fp%"\tSuccess\t"%w%"\t"%w%"\t"%w%"\t"%w) (_tName task) timeDiff max_ begin end
+            InfoSuccess (RunInfo duration max_) -> do
+                scriptIO . T.putStrLn $ format (fp%"\tSuccess\t"%s%"\t"%w) (_tName task) duration max_
             InfoFailed r -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) r
             _ -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) i
 

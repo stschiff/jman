@@ -98,8 +98,7 @@ data TaskRunInfo = InfoNoLogFile
 data FailedReason = FailedMem | FailedRuntime | FailedUnknown deriving (Eq, Ord, Show)
 
 data RunInfo = RunInfo {
-    _runInfoBegin :: UTCTime,
-    _runInfoEnd :: UTCTime,
+    _runInfoTime :: T.Text,
     _runInfoMaxMem :: Double
 } deriving (Eq, Show, Ord)
 
@@ -116,7 +115,7 @@ tSubmit projectDir test submissionSpec task = do
         LSFsubmission group queue -> do
             let m = _tMem task
                 rArg = format ("select[mem>"%d%"] rusage[mem="%d%"] span[hosts=1]") m m
-                cmd = ["bash", format fp jobFileName]
+                cmd = ["/usr/bin/time", "--verbose", "bash", format fp jobFileName]
                 lsf_args = ["-J", format fp $ _tName task, "-R", rArg, "-M", format d $ _tMem task,
                         "-n", format d $ _tNrThreads task, "-oo", format fp $ logFileName projectDir task]
                 group_args = if T.null group then [] else ["-G", group]
@@ -136,14 +135,10 @@ tSubmit projectDir test submissionSpec task = do
             else do
                 scriptIO . withFile (encodeString logFile) WriteMode $ \logFileH -> do
                     err $ format ("running job: "%fp) (_tName task)
-                    startT <- getCurrentTime
                     let processRaw = P.proc "/usr/bin/time" ["--verbose", "bash", encodeString jobFileName]
                     (_, _, _, pHandle) <- P.createProcess (processRaw {P.std_err = P.UseHandle logFileH, P.std_out = P.UseHandle logFileH})
                     _ <- P.waitForProcess pHandle
-                    endT <- getCurrentTime
-                    withFile (encodeString logFile) AppendMode $ \logFileH' -> do
-                        hPutStrLn logFileH' ("Start Time: " ++ show startT)
-                        hPutStrLn logFileH' ("End Time: " ++ show endT)
+                    return ()
   where
     wrapCmdArgs args = [if " " `T.isInfixOf` a then T.cons '\"' . flip T.snoc '\"' $ a else a | a <- args]
 
@@ -202,7 +197,7 @@ tRunInfo projectDir task = do
             let headerLine = head l
             case headerLine of
                 "LSF" -> tryRight $ tLSFrunInfo content
-                "Sequential" -> tryRight $ tSeqRunInfo content
+                "Sequential" -> tryRight $ tStandardRunInfo content
                 _ -> return InfoUnknownLogFormat
 
 tLSFrunInfo :: T.Text -> Either String TaskRunInfo
@@ -210,54 +205,50 @@ tLSFrunInfo c = do
     let (_, infoPart) = T.breakOn "Sender: LSF System" c
     if T.null infoPart then return InfoNotFinished else
         if "Successfully completed." `T.isInfixOf` infoPart then
-            InfoSuccess `fmap` parseLSFrunInfo infoPart
+            InfoSuccess `fmap` parseLogFile c
         else
             if "TERM_MEMLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedMem else
                 if "TERM_RUNLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedRuntime else
                     return $ InfoFailed FailedUnknown
 
-parseLSFrunInfo :: T.Text -> Either String RunInfo
-parseLSFrunInfo content = do
-    let l = T.lines content
-    beginLine <- headErr "cannot find starting time in LSF log output" . filter (T.isPrefixOf "Started at ") $ l
-    endLine <- headErr "cannot find end time in LSF log output" . filter (T.isPrefixOf "Results reported at ") $ l
-    let beginTimeStr = T.drop (T.length "Started at ") beginLine
-        endTimeStr = T.drop (T.length "Results reported at ") endLine
-    maxMemLine <- headErr "cannot find maximum memory in LSF log output" . filter (T.isPrefixOf "    Max Memory :             ") $ l
-    maxMemStr <- headErr "cannot read maximum memory in LSF log output" . T.words . T.drop
-                 (T.length "    Max Memory :             ") $ maxMemLine
-    maxMem <- readErr "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
-    beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %e %T %Y" . T.unpack $
-                 beginTimeStr
-    endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %e %T %Y" . T.unpack $
-               endTimeStr
-    return $ RunInfo beginTime endTime maxMem
+-- parseLSFrunInfo :: T.Text -> Either String RunInfo
+-- parseLSFrunInfo content = do
+--     let l = T.lines content
+--     beginLine <- headErr "cannot find starting time in LSF log output" . filter (T.isPrefixOf "Started at ") $ l
+--     endLine <- headErr "cannot find end time in LSF log output" . filter (T.isPrefixOf "Results reported at ") $ l
+--     let beginTimeStr = T.drop (T.length "Started at ") beginLine
+--         endTimeStr = T.drop (T.length "Results reported at ") endLine
+--     maxMemLine <- headErr "cannot find maximum memory in LSF log output" . filter (T.isPrefixOf "    Max Memory :             ") $ l
+--     maxMemStr <- headErr "cannot read maximum memory in LSF log output" . T.words . T.drop
+--                  (T.length "    Max Memory :             ") $ maxMemLine
+--     maxMem <- readErr "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
+--     beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %e %T %Y" . T.unpack $
+--                  beginTimeStr
+--     endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %e %T %Y" . T.unpack $
+--                endTimeStr
+--     let timeDiff = end `diffUTCTime` begin
+--     return $ RunInfo timeDiff maxMem
 
-tSeqRunInfo :: T.Text -> Either String TaskRunInfo
-tSeqRunInfo c = do
+tStandardRunInfo :: T.Text -> Either String TaskRunInfo
+tStandardRunInfo c = do
     let (_, infoPart) = T.breakOn "Command being timed" c
     if T.null infoPart then return InfoNotFinished else
         if "Exit status: 0" `T.isInfixOf` infoPart then
-            InfoSuccess `fmap` parseSeqRunInfo infoPart
+            InfoSuccess `fmap` parseLogFile infoPart
         else
             return $ InfoFailed FailedUnknown
 
-parseSeqRunInfo :: T.Text -> Either String RunInfo
-parseSeqRunInfo content = do
+parseLogFile :: T.Text -> Either String RunInfo
+parseLogFile content = do
     let l = T.lines content
-    beginLine <- headErr "cannot find starting time in GNU time log output" . filter (T.isPrefixOf "Start Time: ") $ l
-    endLine <- headErr "cannot find end time in GNU time log output" . filter (T.isPrefixOf "End Time: ") $ l
-    let beginTimeStr = T.drop (T.length "Start Time: ") beginLine
-        endTimeStr = T.drop (T.length "End Time: ") endLine
-    maxMemLine <- headErr "cannot find maximum memory in LSF log output" . filter (T.isPrefixOf "\tMaximum resident set size (kbytes): ") $ l
-    maxMemStr <- headErr "cannot read maximum memory in LSF log output" . T.words . T.drop
+    maxMemLine <- headErr "cannot find maximum memory in GNU time log output" . filter (T.isPrefixOf "\tMaximum resident set size (kbytes): ") $ l
+    maxMemStr <- headErr "cannot read maximum memory in GNU time log output" . T.words . T.drop
                  (T.length "\tMaximum resident set size (kbytes): ") $ maxMemLine
-    maxMem <- readErr "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
-    beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%F %X%Q UTC" . T.unpack $
-                 beginTimeStr
-    endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%F %X%Q UTC" . T.unpack $
-               endTimeStr
-    return $ RunInfo beginTime endTime (maxMem / 1000)
+    maxMem <- readErr "cannot read maximum memory in GNU time log output" . T.unpack $ maxMemStr
+    durationLine <- headErr "cannot find duration in GNU time log output" . filter (T.isPrefixOf "\tElapsed (wall clock) time (h:mm:ss or m:ss): ") $ l
+    durationStr <- headErr "cannot read duration in GNU time log output" . T.words . T.drop
+                 (T.length "\tElapsed (wall clock) time (h:mm:ss or m:ss): ") $ durationLine
+    return $ RunInfo durationStr (maxMem / 1000)
     
 tClean :: FilePath -> Task -> Script ()
 tClean projectDir task = do
