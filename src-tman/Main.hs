@@ -93,6 +93,7 @@ runSubmit projectDir tasks force test submissionType queue group chunkSize unche
     submissionSpec <- case submissionType of
         "lsf" -> return $ LSFsubmission (T.pack group) (T.pack queue)
         "seq" -> return SequentialExecutionSubmission
+        "slurm" -> return SlurmSubmission
         _ -> throwE "unknown submission type"
     forM_ (zip3 tasks status info) $ \(t, st, i) ->
         if i == InfoNotFinished then
@@ -230,7 +231,7 @@ parseSubmit = CmdSubmit <$> parseSubmitOpt
                             OP.help "only print submission commands, do not actually submit"
     parseSubmissionType = OP.strOption $ OP.short 's' <> OP.long "submissionType" <>
                           OP.value "seq" <> OP.showDefault <>
-                          OP.help "type of submission [seq | par | lsf]"
+                          OP.help "type of submission [seq | lsf | slurm]"
     parseQueue = OP.strOption $ OP.short 'q' <> OP.long "submissionQueue" <> OP.value "" <>
                                 OP.showDefault <>
                                 OP.help "LSF submission Queue (only for lsf submissions)"

@@ -104,6 +104,7 @@ data RunInfo = RunInfo {
 
 data SubmissionSpec = SequentialExecutionSubmission
                     | LSFsubmission T.Text T.Text -- group, queue
+                    | SlurmSubmission
 
 tSubmit :: FilePath -> Bool -> SubmissionSpec -> Task -> Script ()
 tSubmit projectDir test submissionSpec task = do
@@ -139,6 +140,21 @@ tSubmit projectDir test submissionSpec task = do
                     (_, _, _, pHandle) <- P.createProcess (processRaw {P.std_err = P.UseHandle logFileH, P.std_out = P.UseHandle logFileH})
                     _ <- P.waitForProcess pHandle
                     return ()
+        SlurmSubmission -> do
+            let m = _tMem task
+                cmd = format ("/usr/bin/time --verbose bash "%fp) jobFileName
+                args = [format ("--job-name="%fp) (_tName task), format ("--mem="%d) (_tMem task), 
+                            format ("--cpus-per-task="%d) (_tNrThreads task), format ("--output="%fp) (logFileName projectDir task),
+                            format ("--wrap="%s) cmd]
+            if test then
+                echo (T.intercalate " " $ wrapCmdArgs ("sbatch":args))
+            else do
+                touch logFile
+                exitCode <- proc "sbatch" args empty
+                case exitCode of
+                    ExitFailure i -> throwE ("sbatch command failed with exit code " ++ show i)
+                    _ -> return ()
+                
   where
     wrapCmdArgs args = [if " " `T.isInfixOf` a then T.cons '\"' . flip T.snoc '\"' $ a else a | a <- args]
 
@@ -147,6 +163,7 @@ writeJobScript submissionSpec jobFileName command = do
     let submissionName = case submissionSpec of
             LSFsubmission _ _ -> "LSF"
             SequentialExecutionSubmission -> "Sequential"
+            SlurmSubmission -> "Slurm"
     let c = format ("echo "%s%"\n"%s%"\n") submissionName command
     scriptIO $ T.writeFile (encodeString jobFileName) c
 
@@ -170,7 +187,7 @@ tStatus task = do
             else do
                 inputMod <- mapM datefile $ allInputFiles task
                 outputMod <- mapM datefile $ _tOutputFiles task
-                if null inputMod || maximum inputMod <= minimum outputMod then
+                if null inputMod || null outputMod || maximum inputMod <= minimum outputMod then
                     return StatusComplete
                 else
                     return StatusOutdated
@@ -198,6 +215,7 @@ tRunInfo projectDir task = do
             case headerLine of
                 "LSF" -> tryRight $ tLSFrunInfo content
                 "Sequential" -> tryRight $ tStandardRunInfo content
+                "Slurm" -> tryRight $ tStandardRunInfo content
                 _ -> return InfoUnknownLogFormat
 
 tLSFrunInfo :: T.Text -> Either String TaskRunInfo
