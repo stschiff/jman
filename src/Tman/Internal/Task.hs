@@ -13,6 +13,8 @@ module Tman.Internal.Task (
     tRunInfo,
     tClean,
     tLog,
+    tSlurmKill,
+    tLsfKill,
     printTask
 ) where
 
@@ -268,12 +270,20 @@ parseLogFile content = do
                  (T.length "\tElapsed (wall clock) time (h:mm:ss or m:ss): ") $ durationLine
     return $ RunInfo durationStr (maxMem / 1000)
     
-tClean :: FilePath -> Task -> Script ()
-tClean projectDir task = do
+tClean :: FilePath -> Bool -> Task -> Script ()
+tClean projectDir force task = do
     let jobFile = projectDir </> _tName task <.> "job.sh"
         logFile = logFileName projectDir task
-    rm' jobFile
-    rm' logFile
+    if force then do
+        rm' jobFile
+        rm' logFile
+    else do
+        info <- tRunInfo projectDir task
+        case info of
+            InfoSuccess _ -> return ()
+            _ -> do
+                rm' jobFile
+                rm' logFile
   where
     rm' f = do
         b <- testfile f
@@ -287,10 +297,18 @@ tLog projectDir task = do
   where
     fn = logFileName projectDir task
 
--- tLsfKill :: Task -> Script ()
--- tLsfKill task = do
---     exitCode <- proc "bsub" ["-J", format fp $ _tName task] empty
---     case exitCode of
---         ExitFailure i -> throwE ("bkill command failed with exit code " ++ show i)
---         _ -> return ()
---     return ()
+tLsfKill :: Task -> Script ()
+tLsfKill task = do
+    exitCode <- proc "bsub" ["-J", format fp $ _tName task] empty
+    case exitCode of
+        ExitFailure i -> throwE ("bkill command failed with exit code " ++ show i)
+        _ -> return ()
+    return ()
+
+tSlurmKill :: Task -> Script ()
+tSlurmKill task = do
+    exitCode <- proc "scancel" ["-n", format fp $ _tName task] empty
+    case exitCode of
+        ExitFailure i -> throwE ("scancel command failed with exit code " ++ show i)
+        _ -> return ()
+    return ()

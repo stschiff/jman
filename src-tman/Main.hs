@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-import Tman.Internal.Task (Task(..), tSubmit, tRunInfo, tStatus, tClean, tLog, SubmissionSpec(..), TaskStatus(..), TaskRunInfo(..), RunInfo(..))
+import Tman.Internal.Task (Task(..), tSubmit, tRunInfo, tStatus, tClean, tLog, SubmissionSpec(..), TaskStatus(..), TaskRunInfo(..), RunInfo(..), tSlurmKill, tLsfKill)
 import Tman.Internal.Project (Project(..), loadProject)
 import Control.Error (runScript, Script, scriptIO, tryRight, throwE)
 import Turtle.Prelude (err)
@@ -28,9 +28,10 @@ data Command = CmdSubmit SubmitOpt
              | CmdList ListOpt
              | CmdPrint
              | CmdStatus StatusOpt
-             | CmdClean
+             | CmdClean Bool
              | CmdLog
              | CmdInfo
+             | CmdKill String
 
 data SubmitOpt = SubmitOpt {
     _suForce :: Bool,
@@ -72,9 +73,13 @@ runWithOptions (Options projectFileName groupName allJobs cmdOpts) = runScript $
         CmdPrint -> scriptIO . mapM_ (T.putStrLn . _tCommand) $ tasks
         CmdStatus (StatusOpt summaryLevel info skipSuccessful full) ->
             runStatus logDir tasks summaryLevel info skipSuccessful full
-        CmdClean -> mapM_ (tClean logDir) tasks
+        CmdClean force -> mapM_ (tClean logDir force) tasks
         CmdLog -> mapM_ (tLog $ _prLogDir jobProject) tasks
         CmdInfo -> runInfo logDir tasks
+        CmdKill submissionType -> case submissionType of
+            "slurm" -> mapM_ tSlurmKill tasks
+            "lsf" -> mapM_ tLsfKill tasks
+            _ -> throwE "unknown submission type"
   where
     selectTasks jobProject =
         let ret = filter ((~~ groupName) . encodeString . _tName) . _prTasks $ jobProject
@@ -217,7 +222,8 @@ parseCommand = OP.subparser $
     OP.command "status" (parseStatus `withInfo` "print status for each job") <>
     OP.command "clean" (parseClean `withInfo` "remove job and log files") <>
     OP.command "log" (parseLog `withInfo` "print log file for a task") <>
-    OP.command "info" (parseInfo `withInfo` "print run info for a task")
+    OP.command "info" (parseInfo `withInfo` "print run info for a task") <>
+    OP.command "kill" (parseKill `withInfo` "kill job")
 
 parseSubmit :: OP.Parser Command
 parseSubmit = CmdSubmit <$> parseSubmitOpt
@@ -270,10 +276,18 @@ parseStatus = CmdStatus <$> parseStatusOpt
     parseFull = OP.switch $ OP.short 'f' <> OP.long "full" <> OP.help "full status output"
 
 parseClean :: OP.Parser Command
-parseClean = pure CmdClean
+parseClean = CmdClean <$> parseForce
+  where
+    parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <> OP.help "clean even successfully run jobs"
 
 parseLog :: OP.Parser Command
 parseLog = pure CmdLog
 
 parseInfo :: OP.Parser Command
 parseInfo = pure CmdInfo
+
+parseKill :: OP.Parser Command
+parseKill = CmdKill <$> st
+  where
+    st = OP.strOption $ OP.short 's' <> OP.long "submissionType" <> OP.metavar "<slurm|lsf>" <>
+                        OP.help "submission type, must be either slurm or lsf"
