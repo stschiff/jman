@@ -18,7 +18,7 @@ module Tman.Internal.Task (
     printTask
 ) where
 
-import Control.Error (Script, scriptIO, tryAssert, throwE, headErr, justErr, tryRight, readErr)
+import Control.Error (Script, scriptIO, tryAssert, throwE, headErr, justErr, tryRight, readErr, tryJust)
 import Control.Monad (when, mzero)
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=), encode)
 import qualified Data.ByteString.Lazy.Char8 as B
@@ -27,9 +27,9 @@ import qualified Data.Text.IO as T
 import Data.Time (parseTimeM, defaultTimeLocale)
 import Data.Time.Clock (getCurrentTime)
 import Filesystem.Path.CurrentOS (encodeString)
-import Turtle (UTCTime, empty, ExitCode(..), FilePath, (</>), (<.>), directory)
+import Turtle (UTCTime, empty, ExitCode(..), FilePath, (</>), (<.>), directory, fromText)
 import Turtle.Format (format, fp, d, (%), s)
-import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input, err, shell, echo)
+import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input, err, shell, echo, need)
 import Prelude hiding (FilePath)
 import System.IO (withFile, IOMode(..), hPutStrLn)
 import qualified System.Process as P
@@ -114,11 +114,12 @@ tSubmit projectDir test submissionSpec task = do
         logFile = logFileName projectDir task
     mktree . directory $ jobFileName
     writeJobScript submissionSpec jobFileName (_tCommand task)
+    timeCmd <- need "TMAN_GTIME" >>= tryJust "Please set environment variable TMAN_GTIME to the absolute path to your Gnu Time installation"
     case submissionSpec of
         LSFsubmission group queue -> do
             let m = _tMem task
                 rArg = format ("select[mem>"%d%"] rusage[mem="%d%"] span[hosts=1]") m m
-                cmd = ["/usr/bin/time", "--verbose", "bash", format fp jobFileName]
+                cmd = [timeCmd, "--verbose", "bash", format fp jobFileName]
                 lsf_args = ["-J", format fp $ _tName task, "-R", rArg, "-M", format d $ _tMem task,
                         "-n", format d $ _tNrThreads task, "-oo", format fp $ logFileName projectDir task]
                 group_args = if T.null group then [] else ["-G", group]
@@ -138,13 +139,13 @@ tSubmit projectDir test submissionSpec task = do
             else do
                 scriptIO . withFile (encodeString logFile) WriteMode $ \logFileH -> do
                     err $ format ("running job: "%fp) (_tName task)
-                    let processRaw = P.proc "/usr/bin/time" ["--verbose", "bash", encodeString jobFileName]
+                    let processRaw = P.proc (T.unpack timeCmd) ["--verbose", "bash", encodeString jobFileName]
                     (_, _, _, pHandle) <- P.createProcess (processRaw {P.std_err = P.UseHandle logFileH, P.std_out = P.UseHandle logFileH})
                     _ <- P.waitForProcess pHandle
                     return ()
         SlurmSubmission -> do
             let m = _tMem task
-                cmd = format ("/usr/bin/time --verbose bash "%fp) jobFileName
+                cmd = format (s%" --verbose bash "%fp) timeCmd jobFileName
                 args = [format ("--job-name="%fp) (_tName task), format ("--mem="%d) (_tMem task), 
                             format ("--cpus-per-task="%d) (_tNrThreads task), format ("--output="%fp) (logFileName projectDir task),
                             format ("--wrap="%s) cmd]
