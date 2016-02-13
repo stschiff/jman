@@ -1,19 +1,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Tman.Internal.Project (Project(..), ProjectSpec(..), loadProject) where
+module Tman.Internal.Project (Project(..), ProjectSpec(..), loadProject, saveProject) where
 import Tman.Internal.Task (TaskSpec(..), Task(..))
 
 import Control.Applicative ((<|>))
 import Control.Monad (mzero, foldM, when)
-import Control.Error (Script, scriptIO, tryRight, justErr, atErr, throwE)
-import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object, eitherDecode)
+import Control.Error (Script, scriptIO, tryRight, justErr, atErr, throwE, exceptT)
+import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object,
+                   eitherDecode, encode)
 import qualified Data.Attoparsec.Text as A
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Filesystem.Path.CurrentOS (encodeString)
 import Prelude hiding (FilePath)
-import Turtle (FilePath, fromText, format, s, fp, (%), testfile, (</>))
+import Turtle (FilePath, fromText, format, s, fp, (%), testfile, (</>), err)
 
 data ProjectSpec = ProjectSpec {
     _prsName :: T.Text,
@@ -49,14 +50,15 @@ loadProject = do
     let eitherProjectSpec = eitherDecode c :: Either String ProjectSpec
     projectSpec <- tryRight eitherProjectSpec
     tryRight . makeProject $ projectSpec
-  where
-    findProjectFile path = do
-        fn <- testfile (path </> "tman.project")
-        if fn then return path else
-            if path == "/" then
-                throwE "did not find tman.project file. Please run tman init to create one"
-            else
-                findProjectFile ".."
+
+findProjectFile :: FilePath -> Script FilePath
+findProjectFile path = do
+    fn <- testfile (path </> "tman.project")
+    if fn then return path else
+        if path == "/" then
+            throwE "did not find tman.project file. Please run tman init to create one"
+        else
+            findProjectFile ".."
         
 makeProject :: ProjectSpec -> Either String Project
 makeProject (ProjectSpec name logDir taskSpecs) = do
@@ -72,6 +74,24 @@ makeProject (ProjectSpec name logDir taskSpecs) = do
         cmd <- interpolateCommand newTask
         Right $ M.insert n newTask {_tCommand = cmd} taskMap
     tryToFindTask m tn = justErr ("unknown task " ++ show tn) $ M.lookup tn m
+
+saveProject :: Project -> Script ()
+saveProject project = do
+    projectFile <- scriptIO . exceptT (const (return "tman.project")) return $ findProjectFile "."
+    scriptIO . err . format ("saving project file "%fp) $ projectFile
+    let projectSpec = makeProjectSpec project
+    scriptIO . B.putStrLn . encode $ projectSpec
+ 
+makeProjectSpec :: Project -> ProjectSpec
+makeProjectSpec (Project name logDir tasks) = ProjectSpec name (format fp logDir) taskSpecs
+  where
+    taskSpecs = do
+        Task n it ifiles ofiles cmd mem threads hours <- tasks
+        let itText = map (format fp . _tName) it
+            ifilesText = map (format fp) ifiles
+            ofilesText = map (format fp) ofiles
+            nText = format fp n
+        return $ TaskSpec nText itText ifilesText ofilesText cmd mem threads hours
 
 interpolateCommand :: Task -> Either String T.Text
 interpolateCommand (Task n it ifiles ofiles cmd _ _ _) = do
