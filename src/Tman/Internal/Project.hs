@@ -44,20 +44,19 @@ data InterpolationString = TextChunk T.Text
 
 loadProject :: Script Project
 loadProject = do
-    fn <- findProjectFile
+    fn <- findProjectFile "."
     c <- scriptIO . B.readFile . T.unpack . format fp $ fn
     let eitherProjectSpec = eitherDecode c :: Either String ProjectSpec
     projectSpec <- tryRight eitherProjectSpec
     tryRight . makeProject $ projectSpec
   where
-    findProjectFile = go "."
-    go path = do
+    findProjectFile path = do
         fn <- testfile (path </> "tman.project")
         if fn then return path else
             if path == "/" then
                 throwE "did not find tman.project file. Please run tman init to create one"
             else
-                go ".."
+                findProjectFile ".."
         
 makeProject :: ProjectSpec -> Either String Project
 makeProject (ProjectSpec name logDir taskSpecs) = do
