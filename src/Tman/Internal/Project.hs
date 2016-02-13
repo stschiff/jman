@@ -5,7 +5,7 @@ import Tman.Internal.Task (TaskSpec(..), Task(..))
 
 import Control.Applicative ((<|>))
 import Control.Monad (mzero, foldM, when)
-import Control.Error (Script, scriptIO, tryRight, justErr, atErr)
+import Control.Error (Script, scriptIO, tryRight, justErr, atErr, throwE)
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object, eitherDecode)
 import qualified Data.Attoparsec.Text as A
 import qualified Data.ByteString.Lazy.Char8 as B
@@ -13,7 +13,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Filesystem.Path.CurrentOS (encodeString)
 import Prelude hiding (FilePath)
-import Turtle (FilePath, fromText, format, s, fp, (%))
+import Turtle (FilePath, fromText, format, s, fp, (%), testfile, (</>))
 
 data ProjectSpec = ProjectSpec {
     _prsName :: T.Text,
@@ -42,13 +42,23 @@ data InterpolationString = TextChunk T.Text
                          | EscapeChunk
                          deriving (Show)
 
-loadProject :: FilePath -> Script Project
-loadProject projectFileName = do
-    c <- scriptIO $ B.readFile (encodeString projectFileName)
+loadProject :: Script Project
+loadProject = do
+    fn <- findProjectFile
+    c <- scriptIO . B.readFile . T.unpack . format fp $ fn
     let eitherProjectSpec = eitherDecode c :: Either String ProjectSpec
     projectSpec <- tryRight eitherProjectSpec
     tryRight . makeProject $ projectSpec
-
+  where
+    findProjectFile = go "."
+    go path = do
+        fn <- testfile (path </> "tman.project")
+        if fn then return path else
+            if path == "/" then
+                throwE "did not find tman.project file. Please run tman init to create one"
+            else
+                go ".."
+        
 makeProject :: ProjectSpec -> Either String Project
 makeProject (ProjectSpec name logDir taskSpecs) = do
     taskMap <- foldM insert M.empty taskSpecs

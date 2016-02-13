@@ -1,24 +1,27 @@
 {-# LANGUAGE OverloadedStrings #-}
-import Tman.Internal.Task (Task(..), tSubmit, tRunInfo, tStatus, tClean, tLog, SubmissionSpec(..), TaskStatus(..), TaskRunInfo(..), RunInfo(..), tSlurmKill, tLsfKill)
+import Tman.Internal.Task (Task(..), tSubmit, tRunInfo, tStatus, tClean, tLog,
+                           SubmissionSpec(..), TaskStatus(..), TaskRunInfo(..), RunInfo(..), 
+                           tSlurmKill, tLsfKill)
+
 import Tman.Internal.Project (Project(..), loadProject)
+
 import Control.Error (runScript, Script, scriptIO, tryRight, throwE)
-import Turtle.Prelude (err)
-import Filesystem.Path.CurrentOS (encodeString)
-import Turtle (FilePath, fromText)
-import Prelude hiding (FilePath)
-import Turtle.Format (format, s, d, fp, (%), w)
-import qualified Options.Applicative as OP
-import Data.Monoid ((<>))
-import qualified Data.Map as M
 import Data.List (sortBy, groupBy)
-import Control.Monad (forM_)
-import System.FilePath.GlobPattern ((~~))
+import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time (diffUTCTime)
+import Control.Monad (forM_)
+import Data.Monoid ((<>))
+import Filesystem.Path.CurrentOS (encodeString)
+import qualified Options.Applicative as OP
+import Prelude hiding (FilePath)
+import System.FilePath.GlobPattern ((~~))
+import Turtle (FilePath, fromText)
+import Turtle.Format (format, s, d, fp, (%), w)
+import Turtle.Prelude (err)
 
 data Options = Options {
-    _optProject :: FilePath,
     _optGroupName :: String,
     _optAll :: Bool,
     _optCommand :: Command
@@ -61,9 +64,9 @@ main = OP.execParser optParser >>= runWithOptions
     optParser = OP.info (OP.helper <*> options) (OP.fullDesc <> OP.progDesc "task processing tool")
 
 runWithOptions :: Options -> IO ()
-runWithOptions (Options projectFileName groupName allJobs cmdOpts) = runScript $ do
-    scriptIO . err $ format ("loading project file "%fp) projectFileName
-    jobProject <- loadProject projectFileName
+runWithOptions (Options groupName allJobs cmdOpts) = runScript $ do
+    scriptIO . err $ "loading project file"
+    jobProject <- loadProject
     let logDir = _prLogDir jobProject
     tasks <- if allJobs then return $ _prTasks jobProject else tryRight $ selectTasks jobProject
     case cmdOpts of
@@ -203,12 +206,8 @@ runInfo logDir tasks = do
             _ -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) i
 
 options :: OP.Parser Options
-options = Options <$> parseProjectFileName <*> parseGroupName <*> parseAll <*> parseCommand
+options = Options <$> parseGroupName <*> parseAll <*> parseCommand
   where
-    parseProjectFileName = OP.option readFP (OP.short 'p' <> OP.long "projectFile" <>
-                                             OP.value "tman.project" <>
-                                             OP.showDefault <> OP.metavar "<Project_file>" <>
-                                             OP.help "Project file to work with")
     readFP = (fromText . T.pack) `fmap` OP.str
     parseGroupName = OP.strOption $ OP.short 'j' <> OP.long "job" <> OP.metavar "<group_desc>" <>
                                     OP.help "Job or Jobgroup name" <> OP.value "" <> OP.showDefault
