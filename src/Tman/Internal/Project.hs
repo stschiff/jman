@@ -71,10 +71,10 @@ makeProject (ProjectSpec name logDir taskSpecs) = do
 
 addTask :: Project -> TaskSpec -> Script Project
 addTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t h) = do
-    if (fromText n) `M.member` tasks then
-        scriptIO . err $ format ("updating task "%s) n
-    else
-        scriptIO . err $ format ("adding task "%s) n
+    -- if (fromText n) `M.member` tasks then
+    --     scriptIO . err $ format ("updating task "%s) n
+    -- else
+    --     scriptIO . err $ format ("adding task "%s) n
     inputTasks <- mapM (tryToFindTask tasks . fromText) it
     let newTask =
             Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t h

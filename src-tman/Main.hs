@@ -89,12 +89,11 @@ parseSubmit = CmdSubmit <$> parseSubmitOpt
                               "force and should be given with care)")
 
 parseJobSpec :: OP.Parser JobSpec
-parseJobSpec = parseGroupName <|> (parseAll *> pure AllJobs)
+parseJobSpec = parseGroupName <|> pure AllJobs
   where
     parseGroupName = OP.option (JobPattern <$> OP.str) $ OP.short 'j' <> OP.long "job" <>
                                     OP.metavar "<jobname_pattern>" <>
                                     OP.help "Job or Jobgroup name. Can contain * and ** to glob"
-    parseAll = OP.switch $ OP.short 'a' <> OP.long "all" <> OP.help "select all jobs"
 
 withInfo :: OP.Parser a -> String -> OP.ParserInfo a
 withInfo opts desc = OP.info (OP.helper <*> opts) $ OP.progDesc desc
