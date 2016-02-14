@@ -1,20 +1,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Tman.Internal.Project (Project(..), ProjectSpec(..), loadProject, saveProject) where
+module Tman.Internal.Project (Project(..), ProjectSpec(..), loadProject, saveProject,
+                              addTask, removeTask) where
 import Tman.Internal.Task (TaskSpec(..), Task(..))
 
 import Control.Applicative ((<|>))
-import Control.Monad (mzero, foldM, when)
-import Control.Error (Script, scriptIO, tryRight, justErr, atErr, throwE, exceptT)
+import Control.Monad (mzero, foldM)
+import Control.Error (Script, scriptIO, tryRight, atErr, throwE, exceptT, tryJust)
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object,
                    eitherDecode, encode)
 import qualified Data.Attoparsec.Text as A
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
-import Filesystem.Path.CurrentOS (encodeString)
 import Prelude hiding (FilePath)
-import Turtle (FilePath, fromText, format, s, fp, (%), testfile, (</>), err)
+import System.IO (openFile, IOMode(..))
+import Turtle (FilePath, fromText, format, s, fp, (%), testfile, testdir, (</>), err)
 
 data ProjectSpec = ProjectSpec {
     _prsName :: T.Text,
@@ -33,7 +34,8 @@ instance ToJSON ProjectSpec where
 data Project = Project {
     _prName :: T.Text,
     _prLogDir :: FilePath,
-    _prTasks :: [Task]
+    _prTasks :: M.Map FilePath Task,
+    _prTaskOrder :: [FilePath]
 }
 
 data InterpolationString = TextChunk T.Text
@@ -49,44 +51,62 @@ loadProject = do
     c <- scriptIO . B.readFile . T.unpack . format fp $ fn
     let eitherProjectSpec = eitherDecode c :: Either String ProjectSpec
     projectSpec <- tryRight eitherProjectSpec
-    tryRight . makeProject $ projectSpec
+    makeProject projectSpec
 
 findProjectFile :: FilePath -> Script FilePath
 findProjectFile path = do
-    fn <- testfile (path </> "tman.project")
-    if fn then return path else
-        if path == "/" then
-            throwE "did not find tman.project file. Please run tman init to create one"
-        else
-            findProjectFile ".."
+    td <- testdir path
+    if td then do
+        let fn = path </> "tman.project"
+        tf <- testfile fn
+        if tf then return fn else findProjectFile (path </> "..")
+    else
+        throwE "did not find tman.project file. Please run tman init to create one"
         
-makeProject :: ProjectSpec -> Either String Project
+        
+makeProject :: ProjectSpec -> Script Project
 makeProject (ProjectSpec name logDir taskSpecs) = do
-    taskMap <- foldM insert M.empty taskSpecs
-    tasks <- mapM (tryToFindTask taskMap . _tsName) taskSpecs
-    return $ Project name (fromText logDir) tasks
+    let emptyProject = Project name (fromText logDir) M.empty []
+    foldM addTask emptyProject taskSpecs
+
+addTask :: Project -> TaskSpec -> Script Project
+addTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t h) = do
+    if (fromText n) `M.member` tasks then
+        scriptIO . err $ format ("updating task "%s) n
+    else
+        scriptIO . err $ format ("adding task "%s) n
+    inputTasks <- mapM (tryToFindTask tasks . fromText) it
+    let newTask =
+            Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t h
+    cmd <- tryRight . interpolateCommand $ newTask
+    let newTasks = M.insert (fromText n) newTask {_tCommand = cmd} tasks
+    return $ project {_prTasks = newTasks, _prTaskOrder = taskOrder ++ [fromText n]}
   where
-    insert taskMap (TaskSpec n it ifiles ofiles c m t h) = do
-        when (n `M.member` taskMap) $ Left ("duplicate task " ++ show n)
-        inputTasks <- mapM (tryToFindTask taskMap) it
-        let newTask =
-                Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t h
-        cmd <- interpolateCommand newTask
-        Right $ M.insert n newTask {_tCommand = cmd} taskMap
-    tryToFindTask m tn = justErr ("unknown task " ++ show tn) $ M.lookup tn m
+    tryToFindTask m' tn = tryJust ("unknown task " ++ show tn) $ M.lookup tn m'
+
+removeTask :: Project -> FilePath -> Script Project
+removeTask project@(Project _ _ tasks taskOrder) name =
+    if name `M.member` tasks then do
+        scriptIO . err $ format ("deleting task "%fp) name
+        let newTasks = M.delete name tasks
+        return $ project {_prTasks = newTasks, _prTaskOrder = filter (/=name) taskOrder}
+    else do
+        scriptIO . err $ format ("unknown task "%fp) name
+        return project
 
 saveProject :: Project -> Script ()
 saveProject project = do
     projectFile <- scriptIO . exceptT (const (return "tman.project")) return $ findProjectFile "."
-    scriptIO . err . format ("saving project file "%fp) $ projectFile
+    h <- scriptIO . flip openFile WriteMode . T.unpack . format fp $ projectFile 
     let projectSpec = makeProjectSpec project
-    scriptIO . B.putStrLn . encode $ projectSpec
+    scriptIO . B.hPutStrLn h . encode $ projectSpec
  
 makeProjectSpec :: Project -> ProjectSpec
-makeProjectSpec (Project name logDir tasks) = ProjectSpec name (format fp logDir) taskSpecs
+makeProjectSpec (Project name logDir tasks taskOrder) =
+    ProjectSpec name (format fp logDir) taskSpecs
   where
     taskSpecs = do
-        Task n it ifiles ofiles cmd mem threads hours <- tasks
+        Task n it ifiles ofiles cmd mem threads hours <- map ((M.!) tasks) taskOrder
         let itText = map (format fp . _tName) it
             ifilesText = map (format fp) ifiles
             ofilesText = map (format fp) ofiles

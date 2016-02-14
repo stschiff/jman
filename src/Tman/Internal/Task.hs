@@ -18,20 +18,18 @@ module Tman.Internal.Task (
     printTask
 ) where
 
-import Control.Error (Script, scriptIO, tryAssert, throwE, headErr, justErr, tryRight, readErr, tryJust)
+import Control.Error (Script, scriptIO, tryAssert, throwE, headErr, tryRight, readErr, tryJust)
 import Control.Monad (when, mzero)
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=), encode)
 import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time (parseTimeM, defaultTimeLocale)
-import Data.Time.Clock (getCurrentTime)
 import Filesystem.Path.CurrentOS (encodeString)
-import Turtle (UTCTime, empty, ExitCode(..), FilePath, (</>), (<.>), directory, fromText)
+import Turtle (empty, ExitCode(..), FilePath, (</>), (<.>), directory)
 import Turtle.Format (format, fp, d, (%), s)
-import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input, err, shell, echo, need)
+import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input, err, echo, need)
 import Prelude hiding (FilePath)
-import System.IO (withFile, IOMode(..), hPutStrLn)
+import System.IO (withFile, IOMode(..))
 import qualified System.Process as P
 
 data TaskSpec = TaskSpec {
@@ -144,8 +142,7 @@ tSubmit projectDir test submissionSpec task = do
                     _ <- P.waitForProcess pHandle
                     return ()
         SlurmSubmission -> do
-            let m = _tMem task
-                cmd = format (s%" --verbose bash "%fp) timeCmd jobFileName
+            let cmd = format (s%" --verbose bash "%fp) timeCmd jobFileName
                 args = [format ("--job-name="%fp) (_tName task), format ("--mem="%d) (_tMem task), 
                             format ("--cpus-per-task="%d) (_tNrThreads task), format ("--output="%fp) (logFileName projectDir task),
                             format ("--wrap="%s) cmd]
