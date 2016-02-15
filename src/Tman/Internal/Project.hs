@@ -5,7 +5,7 @@ module Tman.Internal.Project (Project(..), ProjectSpec(..), loadProject, savePro
 import Tman.Internal.Task (TaskSpec(..), Task(..))
 
 import Control.Applicative ((<|>))
-import Control.Monad (mzero, foldM)
+import Control.Monad (mzero, foldM, when)
 import Control.Error (Script, scriptIO, tryRight, atErr, throwE, exceptT, tryJust)
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object,
                    eitherDecode, encode)
@@ -14,7 +14,7 @@ import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Prelude hiding (FilePath)
-import System.IO (openFile, IOMode(..))
+import System.IO (openFile, IOMode(..), withFile)
 import Turtle (FilePath, fromText, format, s, fp, (%), testfile, testdir, (</>), err)
 
 data ProjectSpec = ProjectSpec {
@@ -62,8 +62,7 @@ findProjectFile path = do
         if tf then return fn else findProjectFile (path </> "..")
     else
         throwE "did not find tman.project file. Please run tman init to create one"
-        
-        
+          
 makeProject :: ProjectSpec -> Script Project
 makeProject (ProjectSpec name logDir taskSpecs) = do
     let emptyProject = Project name (fromText logDir) M.empty []
@@ -71,16 +70,17 @@ makeProject (ProjectSpec name logDir taskSpecs) = do
 
 addTask :: Project -> TaskSpec -> Script Project
 addTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t h) = do
-    -- if (fromText n) `M.member` tasks then
-    --     scriptIO . err $ format ("updating task "%s) n
-    -- else
-    --     scriptIO . err $ format ("adding task "%s) n
     inputTasks <- mapM (tryToFindTask tasks . fromText) it
     let newTask =
             Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t h
     cmd <- tryRight . interpolateCommand $ newTask
     let newTasks = M.insert (fromText n) newTask {_tCommand = cmd} tasks
-    return $ project {_prTasks = newTasks, _prTaskOrder = taskOrder ++ [fromText n]}
+    newTaskOrder <- if (fromText n) `M.member` tasks then do
+        scriptIO . err $ format ("updating task "%s) n
+        return taskOrder
+    else
+        return $ taskOrder ++ [fromText n]
+    return $ project {_prTasks = newTasks, _prTaskOrder = newTaskOrder}
   where
     tryToFindTask m' tn = tryJust ("unknown task " ++ show tn) $ M.lookup tn m'
 
@@ -97,9 +97,9 @@ removeTask project@(Project _ _ tasks taskOrder) name =
 saveProject :: Project -> Script ()
 saveProject project = do
     projectFile <- scriptIO . exceptT (const (return "tman.project")) return $ findProjectFile "."
-    h <- scriptIO . flip openFile WriteMode . T.unpack . format fp $ projectFile 
-    let projectSpec = makeProjectSpec project
-    scriptIO . B.hPutStrLn h . encode $ projectSpec
+    let projectFileS = T.unpack . format fp $ projectFile
+    scriptIO . withFile projectFileS WriteMode $ \h -> do
+        B.hPutStrLn h . encode $ makeProjectSpec project
  
 makeProjectSpec :: Project -> ProjectSpec
 makeProjectSpec (Project name logDir tasks taskOrder) =

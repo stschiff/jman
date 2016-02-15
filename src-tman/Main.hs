@@ -1,9 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
-import Tman.Internal.Task (Task(..), tSubmit, tRunInfo, tStatus, tClean, tLog,
+import Tman.Internal.Task (Task(..), TaskSpec(..), tSubmit, tRunInfo, tStatus, tClean, tLog,
                            SubmissionSpec(..), TaskStatus(..), TaskRunInfo(..), RunInfo(..), 
                            tSlurmKill, tLsfKill)
 
-import Tman.Internal.Project (Project(..), loadProject)
+import Tman.Internal.Project (Project(..), loadProject, saveProject, addTask)
 
 import Control.Applicative ((<|>))
 import Control.Error (runScript, Script, scriptIO, tryRight, throwE)
@@ -16,8 +16,7 @@ import Data.Monoid ((<>))
 import qualified Options.Applicative as OP
 import Prelude hiding (FilePath)
 import System.FilePath.GlobPattern ((~~))
-import Turtle.Format (format, s, d, fp, (%), w)
-import Turtle.Prelude (err)
+import Turtle (format, s, d, fp, (%), w, FilePath, err, fromText)
 
 data Options = CmdSubmit SubmitOpt
              | CmdList ListOpt
@@ -27,6 +26,8 @@ data Options = CmdSubmit SubmitOpt
              | CmdLog LogOpt
              | CmdInfo InfoOpt
              | CmdKill KillOpt
+             | CmdInit InitOpt
+             | CmdAdd AddOpt
 
 data SubmitOpt = SubmitOpt JobSpec Bool Bool String String String Bool
 -- jobSpec force test submissionType queue group unchecked
@@ -49,6 +50,10 @@ data InfoOpt = InfoOpt JobSpec
 
 data KillOpt = KillOpt JobSpec String
 
+data InitOpt = InitOpt T.Text FilePath
+
+data AddOpt = AddOpt TaskSpec
+
 main :: IO ()
 main = OP.execParser optParser >>= runWithOptions
   where
@@ -64,7 +69,9 @@ parseCommand = OP.subparser $
     OP.command "clean"  (parseClean `withInfo` "remove job and log files") <>
     OP.command "log"    (parseLog `withInfo` "print log file for a task") <>
     OP.command "info"   (parseInfo `withInfo` "print run info for a task") <>
-    OP.command "kill"   (parseKill `withInfo` "kill job")
+    OP.command "kill"   (parseKill `withInfo` "kill job") <>
+    OP.command "init"   (parseInit `withInfo` "initialize a new empty project") <>
+    OP.command "add"    (parseAdd `withInfo` "add a new task to the project")
 
 parseSubmit :: OP.Parser Options
 parseSubmit = CmdSubmit <$> parseSubmitOpt
@@ -151,17 +158,60 @@ parseKill = CmdKill <$> parseKillOpt
     st = OP.strOption $ OP.short 's' <> OP.long "submissionType" <> OP.metavar "<slurm|lsf>" <>
                         OP.help "submission type, must be either slurm or lsf"
 
+parseInit :: OP.Parser Options
+parseInit = CmdInit <$> parseInitOpt
+  where
+    parseInitOpt = InitOpt <$> parseProjectName <*> parseProjectPath
+    parseProjectName = OP.option (T.pack <$> OP.str) $ OP.short 'n' <> OP.long "projectName" <>
+                       OP.metavar "<NAME>" <> OP.help "the name of the project"
+    parseProjectPath = OP.option (fromText . T.pack <$> OP.str) $ OP.short 'p' <> OP.long "path" <>
+                       OP.metavar "<PATH>" <> OP.help "the log- and job-script directory for \
+                                                       \the project"
+
+parseAdd :: OP.Parser Options
+parseAdd = CmdAdd <$> parseAddOpt
+  where
+    parseAddOpt = AddOpt <$> parseTaskSpec
+    parseTaskSpec = TaskSpec <$> parseName <*> parseInputTasks <*> parseInputFiles <*>
+                                 parseOutputFiles <*> parseCmd <*>
+                                 parseMem <*> parseThreads <*> parseHours
+    
+    parseName = OP.option (T.pack <$> OP.str) $ OP.short 'n' <> OP.long "name" <>
+                                 OP.metavar "<NAME>" <> OP.help "name of the task"
+    parseCmd = OP.option (T.pack <$> OP.str) $ OP.short 'c' <> OP.long "command" <>
+                   OP.metavar "<CMD>" <> OP.help "full bash command line, wrapped in quotation \
+                                                  \marks"
+    parseInputTasks = OP.many (OP.option (T.pack <$> OP.str) $ OP.short 'I' <>
+                      OP.long "inputTask" <> OP.metavar "<Task>" <>
+                      OP.help "input task name, can be given multiple times")
+    parseInputFiles = OP.many (OP.option (T.pack <$> OP.str) $ OP.long "inputFile" <>
+                      OP.short 'i' <> OP.metavar "<File>" <>
+                      OP.help "input file, can be given multiple times")
+    parseOutputFiles = OP.many (OP.option (T.pack <$> OP.str) $ OP.long "output" <> OP.short 'o' <>
+                       OP.metavar "<File>" <> OP.help "output file, can be given multiple times")
+    parseMem = OP.option OP.auto $ OP.long "mem" <> OP.short 'm' <> OP.metavar "<Mb>" <>
+                                         OP.value 100 <> OP.showDefault <>
+                                         OP.help "maximum memory in Mb"
+    parseThreads = OP.option OP.auto $ OP.long "threads" <> OP.short 't' <>
+                   OP.metavar "<nrThreads>" <> OP.value 1 <> OP.showDefault <>
+                   OP.help "nr of threads"
+    parseHours = OP.option OP.auto $ OP.long "hours" <> OP.short 'h' <> OP.metavar "<Hours>" <>
+                                    OP.value 10 <> OP.showDefault <> OP.help "run time in hours"
+
+
 runWithOptions :: Options -> IO ()
 runWithOptions options = runScript $ do
     case options of
         CmdSubmit opts -> runSubmit opts
-        CmdList opts -> runList opts
-        CmdPrint opts -> runPrint opts 
+        CmdList   opts -> runList   opts
+        CmdPrint  opts -> runPrint  opts 
         CmdStatus opts -> runStatus opts
-        CmdClean opts -> runClean opts
-        CmdLog opts -> runLog opts
-        CmdInfo opts -> runInfo opts
-        CmdKill opts -> runKill opts
+        CmdClean  opts -> runClean  opts
+        CmdLog    opts -> runLog    opts
+        CmdInfo   opts -> runInfo   opts
+        CmdKill   opts -> runKill   opts
+        CmdInit   opts -> runInit   opts
+        CmdAdd    opts -> runAdd    opts
 
 runSubmit :: SubmitOpt -> Script ()
 runSubmit (SubmitOpt jobSpec force test submissionType queue group unchecked) = do
@@ -338,3 +388,13 @@ runKill (KillOpt jobSpec submissionType) = do
         "lsf" -> mapM_ tLsfKill tasks
         _ -> throwE "unknown submission type"
 
+runInit :: InitOpt -> Script ()
+runInit (InitOpt name path) = do
+    let proj = Project name path M.empty []
+    saveProject proj
+
+runAdd :: AddOpt -> Script ()
+runAdd (AddOpt taskSpec) = do
+    project <- loadProject
+    project' <- addTask project taskSpec
+    saveProject project'
