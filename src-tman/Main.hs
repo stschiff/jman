@@ -1,9 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
-import Tman.Internal.Task (Task(..), TaskSpec(..), tSubmit, tRunInfo, tStatus, tClean, tLog,
+import Tman.Task (Task(..), TaskSpec(..), tSubmit, tRunInfo, tStatus, tClean, tLog,
                            SubmissionSpec(..), TaskStatus(..), TaskRunInfo(..), RunInfo(..), 
                            tSlurmKill, tLsfKill)
 
-import Tman.Internal.Project (Project(..), loadProject, saveProject, addTask)
+import Tman.Project (Project(..), loadProject, saveProject, addTask)
 
 import Control.Applicative ((<|>))
 import Control.Error (runScript, Script, scriptIO, tryRight, throwE)

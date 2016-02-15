@@ -1,11 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Tman.Internal.Project (Project(..), ProjectSpec(..), loadProject, saveProject,
+module Tman.Project (Project(..), ProjectSpec(..), loadProject, saveProject,
                               addTask, removeTask) where
-import Tman.Internal.Task (TaskSpec(..), Task(..))
+import Tman.Task (TaskSpec(..), Task(..))
 
 import Control.Applicative ((<|>))
-import Control.Monad (mzero, foldM, when)
+import Control.Monad (mzero, foldM)
 import Control.Error (Script, scriptIO, tryRight, atErr, throwE, exceptT, tryJust)
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object,
                    eitherDecode, encode)
@@ -14,7 +14,7 @@ import qualified Data.ByteString.Lazy.Char8 as B
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Prelude hiding (FilePath)
-import System.IO (openFile, IOMode(..), withFile)
+import System.IO (IOMode(..), withFile)
 import Turtle (FilePath, fromText, format, s, fp, (%), testfile, testdir, (</>), err)
 
 data ProjectSpec = ProjectSpec {
@@ -66,7 +66,18 @@ findProjectFile path = do
 makeProject :: ProjectSpec -> Script Project
 makeProject (ProjectSpec name logDir taskSpecs) = do
     let emptyProject = Project name (fromText logDir) M.empty []
-    foldM addTask emptyProject taskSpecs
+    foldM readTask emptyProject taskSpecs
+  where
+    readTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t h) = do
+        inputTasks <- mapM (tryToFindTask tasks . fromText) it
+        let newTask =
+                Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t h
+            newTasks = M.insert (fromText n) newTask tasks
+            newTaskOrder = taskOrder ++ [fromText n] 
+        return $ project {_prTasks = newTasks, _prTaskOrder = newTaskOrder}
+
+tryToFindTask :: M.Map FilePath Task -> FilePath -> Script Task
+tryToFindTask m' tn = tryJust ("unknown task " ++ show tn) $ M.lookup tn m'
 
 addTask :: Project -> TaskSpec -> Script Project
 addTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t h) = do
@@ -78,11 +89,10 @@ addTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t
     newTaskOrder <- if (fromText n) `M.member` tasks then do
         scriptIO . err $ format ("updating task "%s) n
         return taskOrder
-    else
+    else do
+        scriptIO . err $ format ("adding task "%s) n
         return $ taskOrder ++ [fromText n]
     return $ project {_prTasks = newTasks, _prTaskOrder = newTaskOrder}
-  where
-    tryToFindTask m' tn = tryJust ("unknown task " ++ show tn) $ M.lookup tn m'
 
 removeTask :: Project -> FilePath -> Script Project
 removeTask project@(Project _ _ tasks taskOrder) name =
