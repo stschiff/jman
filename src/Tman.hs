@@ -9,12 +9,13 @@ module Tman (task,
              saveProject,
              addTask,
              TaskSpec,
-             Project) where
+             ProjectRef) where
     
 import Tman.Task (TaskSpec(..))
 import qualified Tman.Project as P
 
 import Control.Error (runScript)
+import Data.IORef (IORef, readIORef, newIORef, writeIORef)
 import Data.Text (Text)
 import Filesystem.Path (FilePath)
 import Prelude hiding (FilePath)
@@ -24,7 +25,7 @@ task :: FilePath -> Text -> TaskSpec
 task name command = TaskSpec (format fp name) [] [] [] command 100 1 12
 
 type Setter a = a -> TaskSpec -> TaskSpec
-type Project = P.Project
+type ProjectRef = IORef P.Project
 
 inputTasks :: Setter [FilePath]
 inputTasks it taskSpec = taskSpec {_tsInputTasks = map (format fp) it}
@@ -44,11 +45,13 @@ nrThreads t taskSpec = taskSpec {_tsNrThreads = t}
 hours :: Setter Int
 hours h taskSpec = taskSpec {_tsHours = h}
 
-loadProject :: IO Project
-loadProject = runScript P.loadProject
+loadProject :: IO ProjectRef
+loadProject = runScript P.loadProject >>= newIORef
 
-addTask :: Project -> TaskSpec -> IO Project
-addTask project = runScript . P.addTask project
+addTask :: ProjectRef -> TaskSpec -> IO ()
+addTask projectRef taskSpec = do
+    p <- readIORef projectRef
+    (runScript . P.addTask p) taskSpec >>= writeIORef projectRef
 
-saveProject :: Project -> IO ()
-saveProject = runScript . P.saveProject
+saveProject :: ProjectRef -> IO ()
+saveProject p = readIORef p >>= runScript . P.saveProject
