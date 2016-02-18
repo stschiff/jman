@@ -210,7 +210,7 @@ tRunInfo projectDir task = do
             case headerLine of
                 "LSF" -> tryRight $ tLSFrunInfo content
                 "Sequential" -> tryRight $ tStandardRunInfo content
-                "Slurm" -> tryRight $ tStandardRunInfo content
+                "Slurm" -> tryRight $ tSlurmRunInfo content
                 _ -> return InfoUnknownLogFormat
 
 tLSFrunInfo :: T.Text -> Either String TaskRunInfo
@@ -224,23 +224,12 @@ tLSFrunInfo c = do
                 if "TERM_RUNLIMIT" `T.isInfixOf` infoPart then return $ InfoFailed FailedRuntime else
                     return $ InfoFailed FailedUnknown
 
--- parseLSFrunInfo :: T.Text -> Either String RunInfo
--- parseLSFrunInfo content = do
---     let l = T.lines content
---     beginLine <- headErr "cannot find starting time in LSF log output" . filter (T.isPrefixOf "Started at ") $ l
---     endLine <- headErr "cannot find end time in LSF log output" . filter (T.isPrefixOf "Results reported at ") $ l
---     let beginTimeStr = T.drop (T.length "Started at ") beginLine
---         endTimeStr = T.drop (T.length "Results reported at ") endLine
---     maxMemLine <- headErr "cannot find maximum memory in LSF log output" . filter (T.isPrefixOf "    Max Memory :             ") $ l
---     maxMemStr <- headErr "cannot read maximum memory in LSF log output" . T.words . T.drop
---                  (T.length "    Max Memory :             ") $ maxMemLine
---     maxMem <- readErr "cannot read maximum memory in LSF log output" . T.unpack $ maxMemStr
---     beginTime <- justErr "could not parse start time" . parseTimeM False defaultTimeLocale "%a %b %e %T %Y" . T.unpack $
---                  beginTimeStr
---     endTime <- justErr "could not parse end time" . parseTimeM False defaultTimeLocale "%a %b %e %T %Y" . T.unpack $
---                endTimeStr
---     let timeDiff = end `diffUTCTime` begin
---     return $ RunInfo timeDiff maxMem
+tSlurmRunInfo :: T.Text -> Either String TaskRunInfo
+tSlurmRunInfo c = do
+    if "Exceeded job memory limit" `T.isInfixOf` c then
+        return $ InfoFailed FailedMem
+    else
+        tStandardRunInfo c
 
 tStandardRunInfo :: T.Text -> Either String TaskRunInfo
 tStandardRunInfo c = do
