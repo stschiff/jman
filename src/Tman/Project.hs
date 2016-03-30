@@ -5,8 +5,8 @@ module Tman.Project (Project(..), ProjectSpec(..), loadProject, saveProject,
 import Tman.Task (TaskSpec(..), Task(..))
 
 import Control.Applicative ((<|>))
-import Control.Monad (mzero, foldM)
-import Control.Error (Script, scriptIO, tryRight, atErr, throwE, exceptT, tryJust)
+import Control.Monad (mzero, foldM, forM_)
+import Control.Error (Script, scriptIO, tryRight, atErr, throwE, exceptT, tryJust, tryAssert)
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object,
                    eitherDecode, encode)
 import qualified Data.Attoparsec.Text as A
@@ -90,6 +90,10 @@ addTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t
         scriptIO . err $ format ("updating task "%s) n
         return taskOrder
     else do
+        let allOutFiles = concatMap _tOutputFiles tasks
+        forM_ (map fromText ofiles) $ \ofile -> 
+            tryAssert ("duplicated output file " ++ show ofile) $
+                (not . flip elem allOutFiles) ofile
         scriptIO . err $ format ("adding task "%s) n
         return $ taskOrder ++ [fromText n]
     return $ project {_prTasks = newTasks, _prTaskOrder = newTaskOrder}

@@ -283,7 +283,7 @@ runList (ListOpt jobSpec summaryLevel full) = do
             scriptIO . mapM_ (T.putStrLn . tMeta False) $ tasks
   where
     tMeta True (Task n it ifiles o _ m t h) =
-        format (fp%"\t"%d%"\t"%d%"\t"%d%"\t"%w%"\t"%w%"\t"%w) n m t h it ifiles o
+        format (fp%"\t"%d%"\t"%d%"\t"%d%"\t"%w%"\t"%w%"\t"%w) n m t h (map _tName it) ifiles o
     tMeta False (Task n _ _ _ _ m t h) =
         format (fp%"\t"%d%"\t"%d%"\t"%d) n m t h
 
