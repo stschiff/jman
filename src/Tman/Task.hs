@@ -17,15 +17,18 @@ module Tman.Task (
     tLsfKill
 ) where
 
-import Control.Error (Script, scriptIO, tryAssert, throwE, headErr, tryRight, readErr, tryJust)
+import Control.Error (Script, scriptIO, tryAssert, throwE, headErr, tryRight,
+    readErr, tryJust)
 import Control.Monad (when, mzero)
-import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..), object, (.=))
+import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..),
+    object, (.=))
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Filesystem.Path.CurrentOS (encodeString)
 import Turtle (empty, ExitCode(..), FilePath, (</>), (<.>), directory)
 import Turtle.Format (format, fp, d, (%), s)
-import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes, stdout, input, err, echo, need)
+import Turtle.Prelude (testfile, datefile, rm, mktree, proc, du, touch, bytes,
+    stdout, input, err, echo, need)
 import Prelude hiding (FilePath)
 import System.IO (withFile, IOMode(..))
 import qualified System.Process as P
@@ -90,7 +93,8 @@ data TaskRunInfo = InfoNoLogFile
                  | InfoFailed FailedReason
                  | InfoSuccess RunInfo deriving (Eq, Ord, Show)
 
-data FailedReason = FailedMem | FailedRuntime | FailedUnknown deriving (Eq, Ord, Show)
+data FailedReason = FailedMem | FailedRuntime | FailedUnknown
+    deriving (Eq, Ord, Show)
 
 data RunInfo = RunInfo {
     _runInfoTime :: T.Text,
@@ -107,14 +111,17 @@ tSubmit projectDir test submissionSpec task = do
         logFile = logFileName projectDir task
     mktree . directory $ jobFileName
     writeJobScript submissionSpec jobFileName (_tCommand task)
-    timeCmd <- need "TMAN_GTIME" >>= tryJust "Please set environment variable TMAN_GTIME to the absolute path to your Gnu Time installation"
+    timeCmd <- need "TMAN_GTIME" >>= tryJust "Please set environment variable \
+        \TMAN_GTIME to the absolute path to your Gnu Time installation"
     case submissionSpec of
         LSFsubmission group queue -> do
             let m = _tMem task
-                rArg = format ("select[mem>"%d%"] rusage[mem="%d%"] span[hosts=1]") m m
+                rArg = format ("select[mem>"%d%"] rusage[mem="%d%
+                    "] span[hosts=1]") m m
                 cmd = [timeCmd, "--verbose", "bash", format fp jobFileName]
-                lsf_args = ["-J", format fp $ _tName task, "-R", rArg, "-M", format d $ _tMem task,
-                        "-n", format d $ _tNrThreads task, "-oo", format fp $ logFileName projectDir task]
+                lsf_args = ["-J", format fp $ _tName task, "-R", rArg, "-M",
+                    format d $ _tMem task, "-n", format d $ _tNrThreads task,
+                    "-oo", format fp $ logFileName projectDir task]
                 group_args = if T.null group then [] else ["-G", group]
                 queue_args = if T.null queue then [] else ["-q", queue]
                 args = lsf_args ++ group_args ++ queue_args ++ cmd
@@ -124,7 +131,8 @@ tSubmit projectDir test submissionSpec task = do
                 touch logFile
                 exitCode <- proc "bsub" args empty
                 case exitCode of
-                    ExitFailure i -> throwE ("bsub command failed with exit code " ++ show i)
+                    ExitFailure i -> do
+                        throwE $ "bsub command failed with exit code " ++ show i
                     _ -> return ()
         SequentialExecutionSubmission -> do
             if test then
