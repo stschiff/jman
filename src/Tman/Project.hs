@@ -5,7 +5,7 @@ module Tman.Project (Project(..), ProjectSpec(..), loadProject, saveProject,
 import Tman.Task (TaskSpec(..), Task(..))
 
 import Control.Applicative ((<|>))
-import Control.Monad (mzero, foldM, forM_)
+import Control.Monad (mzero, foldM, forM_, when)
 import Control.Error (Script, scriptIO, tryRight, atErr, throwE, exceptT, tryJust, tryAssert)
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object,
                    eitherDecode, encode)
@@ -39,30 +39,21 @@ data Project = Project {
 }
 
 data InterpolationString = TextChunk T.Text
-                         | InputFileChunk Int
+                         | InputFileChunk [RangeSpec]
                          | InputTaskChunk Int Int
                          | OutputFileChunk Int
                          | EscapeChunk
                          deriving (Show)
 
-loadProject :: Script Project
-loadProject = do
-    fn <- findProjectFile "."
+data RangeSpec = SingletonRange Int | FromToRange Int Int deriving (Show)
+
+loadProject :: FilePath -> Script Project
+loadProject fn = do
     c <- scriptIO . B.readFile . T.unpack . format fp $ fn
     let eitherProjectSpec = eitherDecode c :: Either String ProjectSpec
     projectSpec <- tryRight eitherProjectSpec
     makeProject projectSpec
 
-findProjectFile :: FilePath -> Script FilePath
-findProjectFile path = do
-    td <- testdir path
-    if td then do
-        let fn = path </> "tman.project"
-        tf <- testfile fn
-        if tf then return fn else findProjectFile (path </> "..")
-    else
-        throwE "did not find tman.project file. Please run tman init to create one"
-          
 makeProject :: ProjectSpec -> Script Project
 makeProject (ProjectSpec name logDir taskSpecs) = do
     let emptyProject = Project name (fromText logDir) M.empty []
@@ -79,14 +70,15 @@ makeProject (ProjectSpec name logDir taskSpecs) = do
 tryToFindTask :: M.Map FilePath Task -> FilePath -> Script Task
 tryToFindTask m' tn = tryJust ("unknown task " ++ show tn) $ M.lookup tn m'
 
-addTask :: Project -> TaskSpec -> Script Project
-addTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t h) = do
+addTask :: Project -> Bool -> TaskSpec -> Script Project
+addTask project@(Project _ _ tasks taskOrder) verbose
+        (TaskSpec n it ifiles ofiles c m t h) = do
     inputTasks <- mapM (tryToFindTask tasks . fromText) it
     let newTask =
             Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t h
     cmd <- tryRight . interpolateCommand $ newTask
     let newTasks = M.insert (fromText n) newTask {_tCommand = cmd} tasks
-    newTaskOrder <- if (fromText n) `M.member` tasks then do
+    newTaskOrder <- if (fromText n) `M.member` tasks && verbose then do
         scriptIO . err $ format ("updating task "%s) n
         return taskOrder
     else do
@@ -94,7 +86,8 @@ addTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t
         forM_ (map fromText ofiles) $ \ofile -> 
             tryAssert ("duplicated output file " ++ show ofile) $
                 (not . flip elem allOutFiles) ofile
-        scriptIO . err $ format ("adding task "%s) n
+        when verbose $ 
+            scriptIO . err $ format ("adding task "%s) n
         return $ taskOrder ++ [fromText n]
     return $ project {_prTasks = newTasks, _prTaskOrder = newTaskOrder}
 
@@ -108,10 +101,9 @@ removeTask project@(Project _ _ tasks taskOrder) name =
         scriptIO . err $ format ("unknown task "%fp) name
         return project
 
-saveProject :: Project -> Script ()
-saveProject project = do
-    projectFile <- scriptIO . exceptT (const (return "tman.project")) return $ findProjectFile "."
-    let projectFileS = T.unpack . format fp $ projectFile
+saveProject :: FilePath -> Project -> Script ()
+saveProject fn project = do
+    let projectFileS = T.unpack . format fp $ fn
     scriptIO . withFile projectFileS WriteMode $ \h -> do
         B.hPutStrLn h . encode $ makeProjectSpec project
  
@@ -144,17 +136,22 @@ interpolateCommand (Task n it ifiles ofiles cmd _ _ _) = do
             inputTask <- atErr (T.unpack e1) it tIndex
             let e2 = format ("Error in task "%fp%": input task file index in command too high: "%s)
                             n cmd
-            inputFile <- atErr (T.unpack e2) (_tOutputFiles inputTask) fIndex
+            inputFile <- atErr (T.unpack e2) (_tOutputFiles inputTask) (fIndex - 1)
             return $ format fp inputFile
-        InputFileChunk fIndex -> do
+        InputFileChunk rangeSpecs -> do
+            let fileIndices = concat $ do
+                    rangeSpec <- rangeSpecs
+                    case rangeSpec of
+                        SingletonRange num -> return [num]
+                        FromToRange from to -> return [from..to]
             let e = format ("Error in task "%fp%": input file index in command too high: "%s)
                            n cmd
-            inputFile <- atErr (T.unpack e) ifiles fIndex
-            return $ format fp inputFile
+            inputFiles <- mapM (atErr (T.unpack e) ifiles . (\a -> a - 1)) fileIndices
+            return . T.intercalate " " . map (format fp) $ inputFiles
         OutputFileChunk fIndex -> do
             let e = format ("Error in task "%fp%": output file index in command too high: "%s)
                            n cmd
-            outputFile <- atErr (T.unpack e) ofiles fIndex
+            outputFile <- atErr (T.unpack e) ofiles (fIndex - 1)
             return $ format fp outputFile
         EscapeChunk -> return "%"
 
@@ -168,9 +165,15 @@ parseInputFile :: A.Parser InterpolationString
 parseInputFile = do
     _ <- A.char '%'
     _ <- A.char 'i'
-    num <- A.decimal
+    rangeSpecs <- parseRangeSpec `A.sepBy1` (A.char ',')
     _ <- A.char '%'
-    return $ InputFileChunk num
+    return $ InputFileChunk rangeSpecs
+
+parseRangeSpec :: A.Parser RangeSpec
+parseRangeSpec = parseFromToRange <|> parseSingletonRange
+  where
+    parseSingletonRange = SingletonRange <$> A.decimal
+    parseFromToRange = FromToRange <$> A.decimal <* A.char '-' <*> A.decimal
 
 parseInputTask :: A.Parser InterpolationString
 parseInputTask = do

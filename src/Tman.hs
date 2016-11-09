@@ -45,13 +45,13 @@ nrThreads t taskSpec = taskSpec {_tsNrThreads = t}
 hours :: Setter Int
 hours h taskSpec = taskSpec {_tsHours = h}
 
-loadProject :: IO ProjectRef
-loadProject = runScript P.loadProject >>= newIORef
+loadProject :: FilePath -> IO ProjectRef
+loadProject fn = runScript (P.loadProject fn) >>= newIORef
 
-addTask :: ProjectRef -> TaskSpec -> IO ()
-addTask projectRef taskSpec = do
+addTask :: ProjectRef -> Bool -> TaskSpec -> IO ()
+addTask projectRef verbose taskSpec = do
     p <- readIORef projectRef
-    (runScript . P.addTask p) taskSpec >>= writeIORef projectRef
+    (runScript . P.addTask p verbose) taskSpec >>= writeIORef projectRef
 
-saveProject :: ProjectRef -> IO ()
-saveProject p = readIORef p >>= runScript . P.saveProject
+saveProject :: FilePath -> ProjectRef -> IO ()
+saveProject fn p = readIORef p >>= runScript . (P.saveProject fn)
