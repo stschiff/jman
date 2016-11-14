@@ -30,7 +30,8 @@ library
                        turtle,
                        text,
                        system-filepath,
-                       time
+                       time,
+                       transformers
   default-language:    Haskell2010
 
 executable tman

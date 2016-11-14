@@ -6,29 +6,31 @@ module Tman (task,
              mem,
              nrThreads,
              hours,
-             loadProject,
-             newProject,
-             saveProject,
              addTask,
-             TaskSpec,
-             ProjectRef) where
+             tman,
+             TmanBlock,
+             TaskSpec) where
     
 import Tman.Task (TaskSpec(..))
 import qualified Tman.Project as P
 
-import Data.Map (empty)
+import Control.Applicative (empty)
 import Control.Error (runScript)
+import Control.Monad (when)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.State.Strict (execStateT, StateT, get, put)
 import Data.IORef (IORef, readIORef, newIORef, writeIORef)
+import qualified Data.Map as M
 import Data.Text (Text)
 import Filesystem.Path (FilePath)
 import Prelude hiding (FilePath)
-import Turtle.Format (format, fp)
+import Turtle (arguments, proc, format, fp, datefile, testfile, (%), fromText)
 
 task :: FilePath -> Text -> TaskSpec
 task name command = TaskSpec (format fp name) [] [] [] command 100 1 12
 
 type Setter a = a -> TaskSpec -> TaskSpec
-type ProjectRef = IORef P.Project
+type TmanBlock = StateT P.Project IO ()
 
 inputTasks :: Setter [FilePath]
 inputTasks it taskSpec = taskSpec {_tsInputTasks = map (format fp) it}
@@ -48,16 +50,28 @@ nrThreads t taskSpec = taskSpec {_tsNrThreads = t}
 hours :: Setter Int
 hours h taskSpec = taskSpec {_tsHours = h}
 
-loadProject :: FilePath -> IO ProjectRef
-loadProject fn = runScript (P.loadProject fn) >>= newIORef
+tman :: FilePath -> FilePath -> TmanBlock -> IO ()
+tman scriptFile logDir block = do
+    let projectFile = fromText $ format ("."%fp%".tman") scriptFile
+    ds <- datefile scriptFile
+    t <- testfile projectFile
+    update <- if (not t)
+        then
+            return True
+        else do
+            dp <- datefile projectFile
+            return $ ds > dp
+    when update $ do
+        let project = P.Project "" logDir M.empty []
+        project' <- execStateT block project
+        runScript $ P.saveProject projectFile project'
+    args <- arguments 
+    _ <- proc "tman" ("-p" : format fp projectFile : args) empty
+    return ()
 
-newProject :: FilePath -> IO ProjectRef
-newProject path = newIORef $ P.Project "" path empty []
+addTask :: TaskSpec -> TmanBlock
+addTask taskSpec = do
+    pr <- get
+    pr' <- liftIO . runScript $ P.addTask pr True taskSpec
+    put pr'
 
-addTask :: ProjectRef -> Bool -> TaskSpec -> IO ()
-addTask projectRef verbose taskSpec = do
-    p <- readIORef projectRef
-    (runScript . P.addTask p verbose) taskSpec >>= writeIORef projectRef
-
-saveProject :: FilePath -> ProjectRef -> IO ()
-saveProject fn p = readIORef p >>= runScript . (P.saveProject fn)
