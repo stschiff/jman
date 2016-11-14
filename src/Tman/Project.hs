@@ -133,7 +133,7 @@ interpolateCommand (Task n it ifiles ofiles cmd _ _ _) = do
         InputTaskChunk tIndex fIndex -> do
             let e1 = format ("Error in task "%fp%": input task index in command too high: "%s)
                             n cmd
-            inputTask <- atErr (T.unpack e1) it tIndex
+            inputTask <- atErr (T.unpack e1) it (tIndex - 1)
             let e2 = format ("Error in task "%fp%": input task file index in command too high: "%s)
                             n cmd
             inputFile <- atErr (T.unpack e2) (_tOutputFiles inputTask) (fIndex - 1)

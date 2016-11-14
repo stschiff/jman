@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Tman (task,
              inputTasks,
              inputFiles,
@@ -6,6 +7,7 @@ module Tman (task,
              nrThreads,
              hours,
              loadProject,
+             newProject,
              saveProject,
              addTask,
              TaskSpec,
@@ -14,6 +16,7 @@ module Tman (task,
 import Tman.Task (TaskSpec(..))
 import qualified Tman.Project as P
 
+import Data.Map (empty)
 import Control.Error (runScript)
 import Data.IORef (IORef, readIORef, newIORef, writeIORef)
 import Data.Text (Text)
@@ -47,6 +50,9 @@ hours h taskSpec = taskSpec {_tsHours = h}
 
 loadProject :: FilePath -> IO ProjectRef
 loadProject fn = runScript (P.loadProject fn) >>= newIORef
+
+newProject :: FilePath -> IO ProjectRef
+newProject path = newIORef $ P.Project "" path empty []
 
 addTask :: ProjectRef -> Bool -> TaskSpec -> IO ()
 addTask projectRef verbose taskSpec = do
