@@ -24,7 +24,8 @@ import qualified Data.Map as M
 import Data.Text (Text)
 import Filesystem.Path (FilePath)
 import Prelude hiding (FilePath)
-import Turtle (arguments, proc, format, fp, datefile, testfile, (%), fromText)
+import Turtle (arguments, proc, format, fp, datefile, testfile, (%), fromText,
+    need, s)
 
 task :: FilePath -> Text -> TaskSpec
 task name command = TaskSpec (format fp name) [] [] [] command 100 1 12
@@ -50,24 +51,25 @@ nrThreads t taskSpec = taskSpec {_tsNrThreads = t}
 hours :: Setter Int
 hours h taskSpec = taskSpec {_tsHours = h}
 
-tman :: FilePath -> FilePath -> TmanBlock -> IO ()
-tman scriptFile logDir block = do
-    let projectFile = fromText $ format ("."%fp%".tman") scriptFile
-    ds <- datefile scriptFile
-    t <- testfile projectFile
-    update <- if (not t)
-        then
-            return True
-        else do
-            dp <- datefile projectFile
-            return $ ds > dp
-    when update $ do
-        let project = P.Project "" logDir M.empty []
-        project' <- execStateT block project
-        runScript $ P.saveProject projectFile project'
-    args <- arguments 
-    _ <- proc "tman" ("-p" : format fp projectFile : args) empty
-    return ()
+tman :: FilePath -> TmanBlock -> IO ()
+tman logDir block = do
+    Just projectFile <- need "TMAN_PROJECT_FILE"
+--     let projectFile = fromText $ format ("."%fp%".tman") scriptFile
+--     ds <- datefile scriptFile
+--     t <- testfile projectFile
+--     update <- if (not t)
+--         then
+--             return True
+--         else do
+--             dp <- datefile projectFile
+--             return $ ds > dp
+--     when update $ do
+    let project = P.Project "" logDir M.empty []
+    project' <- execStateT block project
+    runScript $ P.saveProject (fromText projectFile) project'
+ --   args <- arguments 
+ --   _ <- proc "tman" ("-p" : format s projectFile : args) empty
+ --   return ()
 
 addTask :: TaskSpec -> TmanBlock
 addTask taskSpec = do

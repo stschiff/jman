@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+if [ "$#" -le 1 ]; then
+    echo "Usage: tmanbash ScriptFile ARGS"
+else
+    SCRIPTFILE=$1
+    export TMAN_PROJECT_FILE=.$(basename $SCRIPTFILE).tman
+    if [ -e $TMAN_PROJECT_FILE ] && \
+        [ $(date -r $TMAN_PROJECT_FILE +%s) -gt $(date -r $SCRIPTFILE +%s) ]; then
+        echo "Tman: Reading cached project file"
+    else
+        echo "running script"
+        bash $SCRIPTFILE
+    fi
+    shift
+    tman "$@"
+fi

@@ -432,20 +432,12 @@ runKill fn (KillOpt jobSpec submissionType) = do
 
 runInit :: FilePath -> InitOpt -> Script ()
 runInit fn (InitOpt name path) = do
-    ignoreFlag <- need "TMAN_DO_NOT_UPDATE_PROJECT"
-    case ignoreFlag of
-        Just "True" -> return ()
-        _ -> do
-            let proj = Project name path M.empty []
-            saveProject fn proj
+    let proj = Project name path M.empty []
+    saveProject fn proj
 
 runAdd :: FilePath -> AddOpt -> Script ()
 runAdd fn (AddOpt taskSpec) = do
-    ignoreFlag <- need "TMAN_DO_NOT_UPDATE_PROJECT"
-    case ignoreFlag of
-        Just "True" -> return ()
-        _ -> do
-            project <- loadProject fn
-            project' <- addTask project True taskSpec
-            saveProject fn project'
+    project <- loadProject fn
+    project' <- addTask project True taskSpec
+    saveProject fn project'
 

@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: tmanScript ScriptFile ProjectPath"
+if [ "$#" -le 1 ]; then
+    echo "Usage: tmanstack ScriptFile ARGS"
 else
     SCRIPTFILE=$1
-    PROJECTPATH=$2
     export TMAN_PROJECT_FILE=.$(basename $SCRIPTFILE).tman
     if [ -e $TMAN_PROJECT_FILE ] && \
         [ $(date -r $TMAN_PROJECT_FILE +%s) -gt $(date -r $SCRIPTFILE +%s) ]; then
-        export TMAN_DO_NOT_UPDATE_PROJECT=True
+        echo "Tman: Reading cached project file"
     else
-        export TMAN_DO_NOT_UPDATE_PROJECT=False
-        tman init -p $PROJECTPATH 
+        echo "running script"
+        stack $SCRIPTFILE
     fi
+    shift
+    tman "$@"
 fi
