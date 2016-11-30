@@ -10,7 +10,7 @@ else
         echo "Tman: Reading cached project file"
     else
         echo "running script"
-        rm $TMAN_PROJECT_FILE
+        rm -f $TMAN_PROJECT_FILE
         bash $SCRIPTFILE
     fi
     shift
