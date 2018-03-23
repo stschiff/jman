@@ -6,7 +6,7 @@ import Tman.Task (TaskSpec(..), Task(..))
 
 import Control.Applicative ((<|>))
 import Control.Monad (mzero, foldM, forM_, when)
-import Control.Error (Script, scriptIO, tryRight, atErr, throwE, exceptT, tryJust, tryAssert)
+import Control.Error (Script, scriptIO, tryRight, atErr, throwE, tryJust, tryAssert)
 import Data.Aeson (Value(..), (.:), parseJSON, toJSON, FromJSON, ToJSON, (.=), object,
                    eitherDecode, encode)
 import qualified Data.Attoparsec.Text as A
@@ -15,7 +15,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Prelude hiding (FilePath)
 import System.IO (IOMode(..), withFile)
-import Turtle (FilePath, fromText, format, s, fp, (%), testfile, testdir, (</>), err)
+import Turtle
 
 data ProjectSpec = ProjectSpec {
     _prsName :: T.Text,
@@ -51,7 +51,9 @@ loadProject :: FilePath -> Script Project
 loadProject fn = do
     c <- scriptIO . B.readFile . T.unpack . format fp $ fn
     let eitherProjectSpec = eitherDecode c :: Either String ProjectSpec
-    projectSpec <- tryRight eitherProjectSpec
+    projectSpec <- case eitherProjectSpec of
+        Left e' -> throwE (T.pack e')
+        Right spec -> return spec
     makeProject projectSpec
 
 makeProject :: ProjectSpec -> Script Project
@@ -68,7 +70,7 @@ makeProject (ProjectSpec name logDir taskSpecs) = do
         return $ project {_prTasks = newTasks, _prTaskOrder = newTaskOrder}
 
 tryToFindTask :: M.Map FilePath Task -> FilePath -> Script Task
-tryToFindTask m' tn = tryJust ("unknown task " ++ show tn) $ M.lookup tn m'
+tryToFindTask m' tn = tryJust (format ("unknown task "%fp) tn) $ M.lookup tn m'
 
 addTask :: Project -> Bool -> TaskSpec -> Script Project
 addTask project@(Project _ _ tasks taskOrder) verbose
@@ -79,26 +81,26 @@ addTask project@(Project _ _ tasks taskOrder) verbose
     cmd <- tryRight . interpolateCommand $ newTask
     let newTasks = M.insert (fromText n) newTask {_tCommand = cmd} tasks
     newTaskOrder <- if (fromText n) `M.member` tasks && verbose then do
-        scriptIO . err $ format ("updating task "%s) n
+        scriptIO . err . unsafeTextToLine $ format ("updating task "%s) n
         return taskOrder
     else do
         let allOutFiles = concatMap _tOutputFiles tasks
         forM_ (map fromText ofiles) $ \ofile -> 
-            tryAssert ("duplicated output file " ++ show ofile) $
+            tryAssert (format ("duplicated output file "%fp) ofile) $
                 (not . flip elem allOutFiles) ofile
         when verbose $ 
-            scriptIO . err $ format ("adding task "%s) n
+            scriptIO . err . unsafeTextToLine $ format ("adding task "%s) n
         return $ taskOrder ++ [fromText n]
     return $ project {_prTasks = newTasks, _prTaskOrder = newTaskOrder}
 
 removeTask :: Project -> FilePath -> Script Project
 removeTask project@(Project _ _ tasks taskOrder) name =
     if name `M.member` tasks then do
-        scriptIO . err $ format ("deleting task "%fp) name
+        scriptIO . err . unsafeTextToLine $ format ("deleting task "%fp) name
         let newTasks = M.delete name tasks
         return $ project {_prTasks = newTasks, _prTaskOrder = filter (/=name) taskOrder}
     else do
-        scriptIO . err $ format ("unknown task "%fp) name
+        scriptIO . err . unsafeTextToLine $ format ("unknown task "%fp) name
         return project
 
 saveProject :: FilePath -> Project -> Script ()
@@ -119,11 +121,11 @@ makeProjectSpec (Project name logDir tasks taskOrder) =
             nText = format fp n
         return $ TaskSpec nText itText ifilesText ofilesText cmd mem threads hours
 
-interpolateCommand :: Task -> Either String T.Text
+interpolateCommand :: Task -> Either T.Text T.Text
 interpolateCommand (Task n it ifiles ofiles cmd _ _ _) = do
     let chunksParse = A.parseOnly (parser <* A.endOfInput) cmd
     chunks <- case chunksParse of
-        Left _ -> Left $ T.unpack (format ("error in task "%fp%": problematic tags in command: "%s) n cmd)
+        Left _ -> Left $ format ("error in task "%fp%": problematic tags in command: "%s) n cmd
         Right a -> Right a
     textChunks <- mapM chunkToText chunks
     return $ T.concat textChunks
@@ -133,10 +135,10 @@ interpolateCommand (Task n it ifiles ofiles cmd _ _ _) = do
         InputTaskChunk tIndex fIndex -> do
             let e1 = format ("Error in task "%fp%": input task index in command too high: "%s)
                             n cmd
-            inputTask <- atErr (T.unpack e1) it (tIndex - 1)
+            inputTask <- atErr e1 it (tIndex - 1)
             let e2 = format ("Error in task "%fp%": input task file index in command too high: "%s)
                             n cmd
-            inputFile <- atErr (T.unpack e2) (_tOutputFiles inputTask) (fIndex - 1)
+            inputFile <- atErr e2 (_tOutputFiles inputTask) (fIndex - 1)
             return $ format fp inputFile
         InputFileChunk rangeSpecs -> do
             let fileIndices = concat $ do
@@ -144,14 +146,14 @@ interpolateCommand (Task n it ifiles ofiles cmd _ _ _) = do
                     case rangeSpec of
                         SingletonRange num -> return [num]
                         FromToRange from to -> return [from..to]
-            let e = format ("Error in task "%fp%": input file index in command too high: "%s)
+            let e' = format ("Error in task "%fp%": input file index in command too high: "%s)
                            n cmd
-            inputFiles <- mapM (atErr (T.unpack e) ifiles . (\a -> a - 1)) fileIndices
+            inputFiles <- mapM (atErr e' ifiles . (\a -> a - 1)) fileIndices
             return . T.intercalate " " . map (format fp) $ inputFiles
         OutputFileChunk fIndex -> do
-            let e = format ("Error in task "%fp%": output file index in command too high: "%s)
+            let e' = format ("Error in task "%fp%": output file index in command too high: "%s)
                            n cmd
-            outputFile <- atErr (T.unpack e) ofiles (fIndex - 1)
+            outputFile <- atErr e' ofiles (fIndex - 1)
             return $ format fp outputFile
         EscapeChunk -> return "%"
 

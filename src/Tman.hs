@@ -14,18 +14,14 @@ module Tman (task,
 import Tman.Task (TaskSpec(..))
 import qualified Tman.Project as P
 
-import Control.Applicative (empty)
 import Control.Error (runScript)
-import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.State.Strict (execStateT, StateT, get, put)
-import Data.IORef (IORef, readIORef, newIORef, writeIORef)
 import qualified Data.Map as M
 import Data.Text (Text)
 import Filesystem.Path (FilePath)
 import Prelude hiding (FilePath)
-import Turtle (arguments, proc, format, fp, datefile, testfile, (%), fromText,
-    need, s)
+import Turtle
 
 task :: FilePath -> Text -> TaskSpec
 task name command = TaskSpec (format fp name) [] [] [] command 100 1 12
@@ -40,7 +36,7 @@ inputFiles :: Setter [FilePath]
 inputFiles i taskSpec = taskSpec {_tsInputFiles = map (format fp) i}
 
 outputFiles :: Setter [FilePath]
-outputFiles o taskSpec = taskSpec {_tsOutputFiles = map (format fp) o}
+outputFiles o' taskSpec = taskSpec {_tsOutputFiles = map (format fp) o'}
 
 mem :: Setter Int
 mem m taskSpec = taskSpec {_tsMem = m}
