@@ -19,6 +19,7 @@ import Control.Monad (when, mzero)
 import Data.Aeson (FromJSON, ToJSON, parseJSON, (.:), toJSON, Value(..),
     object, (.=))
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Prelude hiding (FilePath)
 import Turtle
 
@@ -92,11 +93,14 @@ data RunInfo = RunInfo {
 
 tSubmit :: FilePath -> Bool -> Task -> Script ()
 tSubmit projectDir test task = do
-    let logFile = logFileName projectDir task
-    mktree . directory $ logFile
+    let jobFileName = projectDir </> _tName task <.> "job.sh"
+        logFile = logFileName projectDir task
+    mktree . directory $ jobFileName
+    writeJobScript jobFileName (_tCommand task)
+
     let args = [format ("--job-name="%fp) (_tName task), format ("--mem="%d) (_tMem task), 
             format ("--cpus-per-task="%d) (_tNrThreads task),
-            format ("--output="%fp) logFile, format ("--wrap="%s) (_tCommand task)]
+            format ("--output="%fp) logFile, format fp jobFileName]
     if test then
         echo . unsafeTextToLine . T.intercalate " " $ wrapCmdArgs ("sbatch":args)
     else do
@@ -109,7 +113,12 @@ tSubmit projectDir test task = do
   where
     wrapCmdArgs args =
         [if " " `T.isInfixOf` a then T.cons '\"' . flip T.snoc '\"' $ a else a | a <- args]
-
+    
+writeJobScript :: FilePath -> T.Text -> Script ()
+writeJobScript jobFileName command = do
+    let c = format ("#!/usr/bin/env bash\n"%s%"\n") command
+    scriptIO $ T.writeFile (T.unpack . format fp $ jobFileName) c
+    
 tStatus :: Task -> Script TaskStatus
 tStatus task = do
     inputTaskStatus <- mapM tStatus (_tInputTasks task)
