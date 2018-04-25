@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-import Tman.Task (Task(..), TaskSpec(..), tSubmit, tStatus, tClean, tLog, TaskStatus(..))
+import Tman.Task (Task(..), TaskSpec(..), tSubmit, tStatus, tClean, tLog, TaskStatus(..), TaskRunInfo(..), RunInfo(..), tRunInfo)
 
 import Tman.Project (Project(..), loadProject, saveProject, addTask)
 
@@ -22,6 +22,7 @@ data SubCommand = CmdSubmit SubmitOpt
                 | CmdList ListOpt
                 | CmdPrint PrintOpt
                 | CmdStatus StatusOpt
+                | CmdInfo InfoOpt
                 | CmdClean CleanOpt
                 | CmdLog LogOpt
                 | CmdInit InitOpt
@@ -41,6 +42,8 @@ data StatusOpt = StatusOpt JobSpec Int Bool Bool
 -- jobSpec summary skipSuccessful full
 
 data CleanOpt = CleanOpt JobSpec
+
+data InfoOpt = InfoOpt JobSpec
 
 data LogOpt = LogOpt JobSpec
 
@@ -74,6 +77,7 @@ parseOptions projectFileEnv = Options <$> parseProjectFile <*> parseSubCommand
         OP.command "list"   (parseList `withInfo` "list job info") <>
         OP.command "print"  (parsePrint `withInfo` "print commands") <>
         OP.command "status" (parseStatus `withInfo` "print status for each job") <>
+        OP.command "info"   (parseInfo `withInfo` "print runinfo for each job") <>
         OP.command "clean"  (parseClean `withInfo` "remove job and log files") <>
         OP.command "log"    (parseLog `withInfo` "print log file for a task") <>
         OP.command "init"   (parseInit `withInfo` "initialize a new empty project") <>
@@ -142,6 +146,11 @@ parseClean = CmdClean <$> parseCleanOpt
   where
     parseCleanOpt = CleanOpt <$> parseJobSpec
 
+parseInfo :: OP.Parser SubCommand
+parseInfo = CmdInfo <$> parseInfoOpt
+  where
+    parseInfoOpt = InfoOpt <$> parseJobSpec
+
 parseLog :: OP.Parser SubCommand
 parseLog = CmdLog <$> parseLogOpt
   where
@@ -198,6 +207,7 @@ runWithOptions (Options fn subCommand) = runScript $ do
         CmdList   opts -> runList   fn opts
         CmdPrint  opts -> runPrint  fn opts 
         CmdStatus opts -> runStatus fn opts
+        CmdInfo   opts -> runInfo   fn opts
         CmdClean  opts -> runClean  fn opts
         CmdLog    opts -> runLog    fn opts
         CmdInit   opts -> runInit   fn opts
@@ -318,6 +328,22 @@ runStatus fn (StatusOpt jobSpec summaryLevel skipSuccessful full) = do
         if full
         then format ("missing input file: "%s) t
         else "missingInputFile"
+
+runInfo :: FilePath -> InfoOpt -> Script ()
+runInfo fn (InfoOpt jobSpec) = do
+    project <- loadProject fn
+    let logDir = _prLogDir project
+    tasks <- tryRight $ selectTasks project jobSpec
+    scriptIO . putStrLn $
+        "JOB\tSTATUS\tDURATION [(h:mm:ss or m:ss)]\tMAX_MEM [Mb]"
+    info <- mapM (tRunInfo logDir) tasks
+    forM_ (zip tasks info) $ \(task, i) ->
+        case i of
+            InfoSuccess (RunInfo duration max_) -> do
+                scriptIO . T.putStrLn $ format
+                    (fp%"\tSuccess\t"%s%"\t"%w) (_tName task) duration max_
+            _ -> scriptIO . T.putStrLn $ format (fp%"\t"%w) (_tName task) i
+
 
 runClean :: FilePath -> CleanOpt -> Script ()
 runClean fn (CleanOpt jobSpec) = do
