@@ -164,7 +164,7 @@ tRunInfo projectDir task = do
         return InfoNoStatsFile
     else do
         content <- scriptIO . T.readFile . encodeString $ fn
-        if content == "" then return InfoNoStatsFile else do
+        if content == "" then return InfoNotFinished else do
                 let (_, infoPart) = T.breakOn "Command being timed" content
                 if T.null infoPart then return InfoNotFinished else
                     if "Exit status: 0" `T.isInfixOf` infoPart then
