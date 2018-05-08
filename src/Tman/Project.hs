@@ -61,10 +61,10 @@ makeProject (ProjectSpec name logDir taskSpecs) = do
     let emptyProject = Project name (fromText logDir) M.empty []
     foldM readTask emptyProject taskSpecs
   where
-    readTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t h) = do
+    readTask project@(Project _ _ tasks taskOrder) (TaskSpec n it ifiles ofiles c m t mi pa) = do
         inputTasks <- mapM (tryToFindTask tasks . fromText) it
         let newTask =
-                Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t h
+                Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t mi pa
             newTasks = M.insert (fromText n) newTask tasks
             newTaskOrder = taskOrder ++ [fromText n] 
         return $ project {_prTasks = newTasks, _prTaskOrder = newTaskOrder}
@@ -74,10 +74,10 @@ tryToFindTask m' tn = tryJust (format ("unknown task "%fp) tn) $ M.lookup tn m'
 
 addTask :: Project -> Bool -> TaskSpec -> Script Project
 addTask project@(Project _ _ tasks taskOrder) verbose
-        (TaskSpec n it ifiles ofiles c m t h) = do
+        (TaskSpec n it ifiles ofiles c m t mi pa) = do
     inputTasks <- mapM (tryToFindTask tasks . fromText) it
     let newTask =
-            Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t h
+            Task (fromText n) inputTasks (map fromText ifiles) (map fromText ofiles) c m t mi pa
     cmd <- tryRight . interpolateCommand $ newTask
     let newTasks = M.insert (fromText n) newTask {_tCommand = cmd} tasks
     newTaskOrder <- if (fromText n) `M.member` tasks && verbose then do
@@ -114,15 +114,15 @@ makeProjectSpec (Project name logDir tasks taskOrder) =
     ProjectSpec name (format fp logDir) taskSpecs
   where
     taskSpecs = do
-        Task n it ifiles ofiles cmd mem threads hours <- map ((M.!) tasks) taskOrder
+        Task n it ifiles ofiles cmd mem threads mi pa <- map ((M.!) tasks) taskOrder
         let itText = map (format fp . _tName) it
             ifilesText = map (format fp) ifiles
             ofilesText = map (format fp) ofiles
             nText = format fp n
-        return $ TaskSpec nText itText ifilesText ofilesText cmd mem threads hours
+        return $ TaskSpec nText itText ifilesText ofilesText cmd mem threads mi pa
 
 interpolateCommand :: Task -> Either T.Text T.Text
-interpolateCommand (Task n it ifiles ofiles cmd _ _ _) = do
+interpolateCommand (Task n it ifiles ofiles cmd _ _ _ _) = do
     let chunksParse = A.parseOnly (parser <* A.endOfInput) cmd
     chunks <- case chunksParse of
         Left _ -> Left $ format ("error in task "%fp%": problematic tags in command: "%s) n cmd

@@ -31,7 +31,8 @@ data TaskSpec = TaskSpec {
     _tsCommand :: T.Text,
     _tsMem :: Int,
     _tsNrThreads :: Int,
-    _tsHours :: Int
+    _tsMinutes :: Int,
+    _tsPartition :: T.Text
 } deriving Show
 
 instance FromJSON TaskSpec where
@@ -43,11 +44,12 @@ instance FromJSON TaskSpec where
                            v .: "command" <*>
                            v .: "mem" <*>
                            v .: "nrThreads" <*>
-                           v .: "hours"
+                           v .: "minutes" <*>
+                           v .: "partition"
     parseJSON _         = mzero
 
 instance ToJSON TaskSpec where
-    toJSON (TaskSpec n it ifiles o' c m t h) =
+    toJSON (TaskSpec n it ifiles o' c m t minutes part) =
         object ["name" .= n,
                 "inputTasks" .= it,
                 "inputFiles" .= ifiles,
@@ -55,7 +57,8 @@ instance ToJSON TaskSpec where
                 "command" .= c,
                 "mem" .= m,
                 "nrThreads" .= t,
-                "hours" .= h]
+                "minutes" .= minutes,
+                "partition" .= part]
 
 data Task = Task {
     _tName :: FilePath,
@@ -65,7 +68,8 @@ data Task = Task {
     _tCommand :: T.Text,
     _tMem :: Int,
     _tNrThreads :: Int,
-    _tHours :: Int
+    _tMinutes :: Int,
+    _tPartition :: T.Text
 } deriving Show
 
 logFileName :: FilePath -> Task -> FilePath
@@ -101,9 +105,13 @@ tSubmit projectDir test task = do
             \TMAN_GTIME to the absolute path to your Gnu Time installation"
 
     let cmd = format (s%" --verbose -o "%fp%" bash "%fp) timeCmd statsFile jobFileName
-        args = [format ("--job-name="%fp) (_tName task), format ("--mem="%d) (_tMem task), 
-            format ("--cpus-per-task="%d) (_tNrThreads task),
-            format ("--output="%fp) logFile, format ("--wrap="%s) cmd]
+        args = [format ("--job-name="%fp) (_tName task),
+                format ("--mem="%d) (_tMem task), 
+                format ("--cpus-per-task="%d) (_tNrThreads task),
+                format ("--partition="%s) (_tPartition task),
+                format ("--time="%d) (_tMinutes task),
+                format ("--output="%fp) logFile,
+                format ("--wrap="%s) cmd]
     if test then
         echo . unsafeTextToLine . T.intercalate " " $ wrapCmdArgs ("sbatch":args)
     else do

@@ -172,9 +172,9 @@ parseAdd = CmdAdd <$>  parseAddOpt
   where
     parseAddOpt = AddOpt <$> parseTaskSpec
     parseTaskSpec =
-        (\n its ofs c m t h ifs -> TaskSpec n its ifs ofs c m t h) <$>
+        (\n its ofs c m t minutes part ifs -> TaskSpec n its ifs ofs c m t minutes part) <$>
         parseName <*> parseInputTasks <*> parseOutputFiles <*> parseCmd <*>
-        parseMem <*> parseThreads <*> parseHours <*> parseInputFiles 
+        parseMem <*> parseThreads <*> parseMinutes <*> parsePartition <*> parseInputFiles 
     
     parseName = OP.option (T.pack <$> OP.str) $ OP.short 'n' <>
         OP.long "name" <> OP.metavar "<NAME>" <> OP.help "name of the task"
@@ -196,10 +196,12 @@ parseAdd = CmdAdd <$>  parseAddOpt
     parseThreads = OP.option OP.auto $ OP.long "threads" <> OP.short 't' <>
                    OP.metavar "<nrThreads>" <> OP.value 1 <> OP.showDefault <>
                    OP.help "nr of threads"
-    parseHours = OP.option OP.auto $ OP.long "hours" <> OP.short 'h' <>
-        OP.metavar "<Hours>" <> OP.value 10 <> OP.showDefault <>
-        OP.help "run time in hours"
-
+    parseMinutes = OP.option OP.auto $ OP.long "minutes" <> OP.metavar "<MINUTES>" <>
+        OP.value 60 <> OP.showDefault <> OP.help "run time in minutes"
+    parsePartition = OP.option (T.pack <$> OP.str) $ OP.long "partition" <> OP.short 'p' <>
+        OP.metavar "<PARTITION>" <> OP.value "short" <> OP.showDefault <>
+        OP.help "select the SLURM partition to submit to"
+        
 runWithOptions :: Options -> IO ()
 runWithOptions (Options fn subCommand) = runScript $ do
     case subCommand of
@@ -261,20 +263,20 @@ runList fn (ListOpt jobSpec summaryLevel full) = do
             [format ("Group "%s%": "%d%" job(s)") g' num | (g', num) <- entries]
     else
         if full then do
-            let headers = ["NAME", "MEMORY", "THREADS", "HOURS", "INPUTTASKS",
+            let headers = ["NAME", "MEMORY", "THREADS", "MINUTES", "PARTITION", "INPUTTASKS",
                     "INPUTFILES", "OUTPUTFILES"]
             scriptIO . T.putStrLn . T.intercalate "\t" $ headers
             scriptIO  . mapM_ (T.putStrLn . tMeta True) $ tasks
         else do
-            let headers = ["NAME", "MEMORY", "THREADS", "HOURS"]
+            let headers = ["NAME", "MEMORY", "THREADS", "MINUTES", "PARTITION"]
             scriptIO . T.putStrLn . T.intercalate "\t" $ headers
             scriptIO . mapM_ (T.putStrLn . tMeta False) $ tasks
   where
-    tMeta True (Task n it ifiles o' _ m t h) =
-        format (fp%"\t"%d%"\t"%d%"\t"%d%"\t"%w%"\t"%w%"\t"%w) n m t h
-        (map _tName it) ifiles o'
-    tMeta False (Task n _ _ _ _ m t h) =
-        format (fp%"\t"%d%"\t"%d%"\t"%d) n m t h
+    tMeta True (Task n it ifiles o' _ m t mi pa) =
+        format (fp%"\t"%d%"\t"%d%"\t"%d%"\t"%s%"\t"%w%"\t"%w%"\t"%w) n m t mi pa
+            (map _tName it) ifiles o'
+    tMeta False (Task n _ _ _ _ m t mi pa) =
+        format (fp%"\t"%d%"\t"%d%"\t"%d%"\t"%s) n m t mi pa
 
 runPrint :: FilePath -> PrintOpt -> Script ()
 runPrint fn (PrintOpt jobSpec) = do

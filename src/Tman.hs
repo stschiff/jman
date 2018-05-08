@@ -5,7 +5,8 @@ module Tman (task,
              outputFiles,
              mem,
              nrThreads,
-             hours,
+             minutes,
+             partition,
              addTask,
              tman,
              TmanBlock,
@@ -24,7 +25,7 @@ import Prelude hiding (FilePath)
 import Turtle
 
 task :: FilePath -> Text -> TaskSpec
-task name command = TaskSpec (format fp name) [] [] [] command 100 1 12
+task name command = TaskSpec (format fp name) [] [] [] command 100 1 60 "Short"
 
 type Setter a = a -> TaskSpec -> TaskSpec
 type TmanBlock = StateT P.Project IO ()
@@ -44,28 +45,18 @@ mem m taskSpec = taskSpec {_tsMem = m}
 nrThreads :: Setter Int
 nrThreads t taskSpec = taskSpec {_tsNrThreads = t}
 
-hours :: Setter Int
-hours h taskSpec = taskSpec {_tsHours = h}
+minutes :: Setter Int
+minutes m taskSpec = taskSpec {_tsMinutes = m}
+
+partition :: Setter Text
+partition p taskSpec = taskSpec {_tsPartition = p}
 
 tman :: FilePath -> TmanBlock -> IO ()
 tman logDir block = do
     Just projectFile <- need "TMAN_PROJECT_FILE"
---     let projectFile = fromText $ format ("."%fp%".tman") scriptFile
---     ds <- datefile scriptFile
---     t <- testfile projectFile
---     update <- if (not t)
---         then
---             return True
---         else do
---             dp <- datefile projectFile
---             return $ ds > dp
---     when update $ do
     let project = P.Project "" logDir M.empty []
     project' <- execStateT block project
     runScript $ P.saveProject (fromText projectFile) project'
- --   args <- arguments 
- --   _ <- proc "tman" ("-p" : format s projectFile : args) empty
- --   return ()
 
 addTask :: TaskSpec -> TmanBlock
 addTask taskSpec = do
