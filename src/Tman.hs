@@ -25,7 +25,7 @@ import Prelude hiding (FilePath)
 import Turtle
 
 task :: FilePath -> Text -> TaskSpec
-task name command = TaskSpec (format fp name) [] [] [] command 100 1 60 "Short"
+task name command = TaskSpec (format fp name) [] [] [] command 100 1 60 "short"
 
 type Setter a = a -> TaskSpec -> TaskSpec
 type TmanBlock = StateT P.Project IO ()
