@@ -28,7 +28,7 @@ data SubCommand = CmdSubmit SubmitOpt
                 | CmdInit InitOpt
                 | CmdAdd AddOpt
 
-data SubmitOpt = SubmitOpt JobSpec Bool Bool String String Bool
+data SubmitOpt = SubmitOpt JobSpec Bool Bool String String Bool (Maybe String)
 -- jobSpec force test queue group unchecked
 
 data JobSpec = JobPattern String | AllJobs
@@ -87,7 +87,7 @@ parseSubmit :: OP.Parser SubCommand
 parseSubmit = CmdSubmit <$> parseSubmitOpt
   where
     parseSubmitOpt = SubmitOpt <$> parseJobSpec <*> parseForce <*> parseTest <*>
-        parseQueue <*> parseSubGroup <*> parseUnchecked
+        parseQueue <*> parseSubGroup <*> parseUnchecked <*> parseMaybePartition
     parseForce = OP.switch $ OP.short 'f' <> OP.long "force" <>
                  OP.help "force submission of completed tasks"
     parseTest = OP.switch $ OP.short 't' <> OP.long "test" <>
@@ -100,6 +100,8 @@ parseSubmit = CmdSubmit <$> parseSubmitOpt
     parseUnchecked = OP.switch $ OP.short 'u' <> OP.long "unchecked" <>
          OP.help ("do not check any status, just submit (this is even stronger \
          \than force and should be given with care)")
+    parseMaybePartition = OP.option (Just <$> OP.str) $ OP.long "partition" <> OP.short 'p' <>
+        OP.value Nothing <> OP.help "optionally overwrite the partition set in the task definitions"
 
 parseJobSpec :: OP.Parser JobSpec
 parseJobSpec = parseGroupName <|> pure AllJobs
@@ -216,7 +218,7 @@ runWithOptions (Options fn subCommand) = runScript $ do
         CmdAdd    opts -> runAdd    fn opts
 
 runSubmit :: FilePath -> SubmitOpt -> Script ()
-runSubmit fn (SubmitOpt jobSpec force test _ _ unchecked) = do
+runSubmit fn (SubmitOpt jobSpec force test _ _ unchecked maybePart) = do
     project <- loadProject fn
     let projectDir = _prLogDir project
     tasks <- tryRight $ selectTasks project jobSpec
@@ -224,21 +226,24 @@ runSubmit fn (SubmitOpt jobSpec force test _ _ unchecked) = do
             return . repeat $ StatusIncomplete ""
         else
             mapM tStatus tasks
-    forM_ (zip tasks status) $ \(t, st) ->
+    forM_ (zip tasks status) $ \(t, st) -> do
+        let t' = case maybePart of
+                Nothing -> t
+                Just part -> t {_tPartition = T.pack part}
         case st of
             StatusIncompleteInputTask _ ->
                 scriptIO . err . unsafeTextToLine $
-                    format ("Job "%fp%": incomplete input task(s), skipping") (_tName t)
+                    format ("Job "%fp%": incomplete input task(s), skipping") (_tName t')
             StatusMissingInputFile _ ->
                 scriptIO . err . unsafeTextToLine $
-                    format ("Job "%fp%": missing input file(s), skipping") (_tName t)
+                    format ("Job "%fp%": missing input file(s), skipping") (_tName t')
             StatusComplete -> if force then
-                    tSubmit projectDir test t
+                    tSubmit projectDir test t'
                 else
                     scriptIO . err . unsafeTextToLine $
                         format ("Job "%fp%": already complete, skipping (use --force to \
                         \submit anyway)") (_tName t)
-            _ -> tSubmit projectDir test t
+            _ -> tSubmit projectDir test t'
 
 selectTasks :: Project -> JobSpec -> Either T.Text [Task]
 selectTasks jobProject jobSpec =
